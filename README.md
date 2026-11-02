@@ -7,7 +7,11 @@ Pointing at an 8 px drone in words does not work. This serves any folder of imag
 lets the box be drawn where the target actually is, and writes the YOLO label straight back to
 disk beside the image.
 
-![interface](docs/screenshot.png)
+![The annotation view](docs/04-annotate.png)
+
+*The annotation view. A heavy-lift drone boxed at 140×236, the class list on the right, and the
+loupe magnifying the target 8× — it sits in the quadrant opposite the cursor, so it never
+covers the thing you are aiming at.*
 
 ## Why it is not a generic annotation tool
 
@@ -52,6 +56,15 @@ rest of the filesystem by a stray URL. It defaults to your home directory, or to
 
 ## Choosing a folder
 
+![Choosing a folder](docs/01-browse.png)
+
+**Browse…** opens your desktop's own folder chooser — a browser cannot hand back a filesystem
+path, but this server runs on the same machine, so it opens the dialog itself. A path can also
+be pasted. Every directory reports how many images it holds, how many are already labelled and
+which layout it is, so you can tell a dataset folder from its parent before opening it.
+`images/`, `labels/` and `annotated/` are shown greyed as parts of the folder's own layout
+rather than as somewhere to go.
+
 Any folder holding images works, and both layouts are read and written **in place**:
 
 ```
@@ -81,16 +94,31 @@ inside it:
 2. any `*.yaml` / `*.yml` with a `names:` field, in block or inline form
 3. `notes.json`, which COCO-style exports leave behind
 
-Classes are edited from the **Classes** button, one per line. Pick the active class from the
-header chips, with `↑`/`↓` or with the number keys, and every new box is drawn with it. Changing
-the class of a selected box is the same action — pick a class while a box is selected.
+Pick the active class from the header chips, with `↑`/`↓` or with the number keys, and every new
+box is drawn with it. Changing the class of a selected box is the same action — pick a class
+while a box is selected.
+
+![The class manager](docs/05-classes.png)
+
+The **Classes** button opens the manager: rename in place, reorder, delete, and add. Each row
+shows how many boxes across the whole folder actually use that class, counted before you decide.
 
 > **Class indices are positional.** A label file says `2 0.51 0.44 0.03 0.02`, not `plane`.
-> Renaming a class in place is safe and adding one at the end is safe. **Reordering the list, or
-> shortening it, silently changes what every box already on disk means** — the tool saves the
-> change and tells you plainly what it just did.
+> Renaming is therefore free, but deleting or reordering changes what every box already on disk
+> means. Leave **Rewrite labels to match** ticked and the labels are rewritten for you:
+>
+> | | what happens to the labels |
+> |---|---|
+> | rename | nothing — the index did not move, so every box still means the same thing |
+> | reorder | renumbered, so every box still means what it did |
+> | delete | that class's boxes are removed, and you are told how many first |
+>
+> Untick it and the change is saved anyway, with a count of how many boxes will end up pointing
+> at the wrong class.
 
 ## The gallery
+
+![The gallery](docs/02-gallery.png)
 
 Folders can run to thousands of frames, so the gallery opens first: cards in a grid, paged, with
 the boxes drawn on each thumbnail. A wall of bare thumbnails tells you an image is annotated but
@@ -112,6 +140,8 @@ nothing here", which is a training negative; the other says "nobody has looked".
 Rejecting keeps the label file. Rejection is a decision about the dataset, not about the
 labelling, and the tool records it in a sidecar rather than deleting your work. Nothing in
 `.labeller/` is training data.
+
+![Batch actions](docs/03-gallery-batch.png)
 
 Select cards with their checkboxes for the batch bar: mark null, reject, un-reject, clear labels
 (back to Unassigned), or delete from disk. Deleting always asks first and names what goes.

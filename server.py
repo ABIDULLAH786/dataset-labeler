@@ -402,10 +402,20 @@ def browse(path: str = ""):
         raise HTTPException(400, "outside the browsable base")
     if not d.is_dir():
         raise HTTPException(404, "no such directory")
+    # images/, labels/ and the rest are parts of THIS folder's layout, not folders you would
+    # open on their own. Listed plainly they read as candidates, and images/ even reports
+    # "0 labelled" because its labels are in the sibling directory, not inside it.
+    parts = {"images": "the images of this folder", "labels": "the labels of this folder",
+             "annotated": "review copies with boxes drawn on",
+             "crops": "review crops"} if (d / "images").is_dir() else {}
     kids = []
     try:
         for p in sorted(d.iterdir(), key=lambda q: q.name.lower()):
             if not p.is_dir() or p.name.startswith(".") or p.name == SIDE:
+                continue
+            if p.name in parts:
+                kids.append({"name": p.name, "path": str(p), "images": 0, "labelled": 0,
+                             "layout": None, "deep_images": 0, "role": parts[p.name]})
                 continue
             info = scan(p)
             # a folder with no images of its own may still be a parent of folders that have

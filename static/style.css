@@ -89,6 +89,8 @@ button,input,select,textarea{font:inherit}
 .dir:last-child{border-bottom:none}
 .dir:hover{background:var(--panel2)}
 .dir.up{color:var(--dim)}
+.dir.part{cursor:default;opacity:.5}
+.dir.part:hover{background:none}
 .dir.has .dn{color:var(--fg)}
 .dn{flex:1;font-size:13.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap}

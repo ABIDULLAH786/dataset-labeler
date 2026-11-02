@@ -117,6 +117,9 @@ async function openBrowse(path) {
   const up = r.parent ? `<div class="dir up" data-p="${esc(r.parent)}">
       <div class="dn">↑ up one level</div></div>` : '';
   $('#dirlist').innerHTML = up + (r.dirs.length ? r.dirs.map(d => {
+    if (d.role)                                   // part of this folder's layout, not a target
+      return `<div class="dir part"><div class="dn">${esc(d.name)}</div>
+                <div class="dt"><span class="tag dimtag">${esc(d.role)}</span></div></div>`;
     const badge = d.layout
       ? `<span class="tag ok">${d.images} images</span>
          <span class="tag">${d.labelled} labelled</span>
@@ -127,7 +130,7 @@ async function openBrowse(path) {
               <div class="dn">${esc(d.name)}</div><div class="dt">${badge}</div></div>`;
   }).join('') : '<div class="empty">Nothing in here.</div>');
 
-  $('#dirlist').querySelectorAll('.dir').forEach(el =>
+  $('#dirlist').querySelectorAll('.dir[data-p]').forEach(el =>
     el.onclick = () => openBrowse(el.dataset.p));
 
   const s = r.self;
