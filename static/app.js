@@ -32,6 +32,9 @@ const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const HS = 7;                                   // handle hit size, screen px
 const STATUSES = [['all', 'All'], ['unassigned', 'Unassigned'], ['annotated', 'Annotated'],
                   ['null', 'Null'], ['rejected', 'Rejected']];
+// must match PALETTE in server.py, so a class is the same colour on a card and on the canvas
+const PALETTE = ['#efa83e', '#52c08a', '#5aa9e6', '#b87ddb', '#e0776a', '#d9c04a', '#7fd1c4',
+                 '#e07ab0', '#8fa6c4', '#c4a77f'];
 
 /* ---------------------------------------------------------------- plumbing */
 function toast(msg, kind) {
@@ -88,7 +91,16 @@ const esc = s => String(s).replace(/[&<>"]/g, c =>
 
 /* ---------------------------------------------------------------- browse */
 async function openBrowse(path) {
-  const r = await api('/api/browse?path=' + encodeURIComponent(path || ''));
+  let r;
+  try {
+    r = await api('/api/browse?path=' + encodeURIComponent(path || ''));
+  } catch (e) {
+    // Browsing is bounded by the base so a stray URL cannot walk the disk. A path chosen from
+    // the desktop dialog, or typed in, is deliberate - move the base to it and try again.
+    const w = await post('/api/base', {path});
+    base = w.base;
+    r = await api('/api/browse?path=' + encodeURIComponent(path));
+  }
   browsePath = r.path; browseSelf = r.self;
   setView('browse');
 
@@ -138,6 +150,28 @@ $('#usehere').onclick = async () => {
 };
 
 $('#pick').onclick = () => openBrowse(root || base);
+
+$('#osdialog').onclick = async () => {
+  $('#osdialog').disabled = true;
+  $('#osdialog').textContent = 'Dialog open…';
+  try {
+    const r = await post('/api/pick', {});
+    if (r.path) await openBrowse(r.path);
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    $('#osdialog').disabled = false;
+    $('#osdialog').textContent = 'Browse…';
+  }
+};
+
+$('#pathbox').addEventListener('keydown', async e => {
+  if (e.key !== 'Enter') return;
+  const p = $('#pathbox').value.trim();
+  if (!p) return;
+  try { await openBrowse(p); $('#pathbox').value = ''; }
+  catch (err) { toast(err.message, 'err'); }
+});
 
 /* ---------------------------------------------------------------- classes */
 async function loadClasses() {
@@ -209,22 +243,99 @@ $('#classfilter').addEventListener('keydown', e => {
   e.stopPropagation();
 });
 
+/* ---------------------------------------------------------------- class manager
+ * Each row remembers the index its class HELD WHEN THE DIALOG OPENED. That is the whole trick:
+ * with it, a renamed row and a deleted-then-added row are distinguishable, so the server can
+ * rewrite labels exactly instead of guessing from names. */
+let draft = [], usage = {};
+
+function renderDraft() {
+  $('#clsrows').innerHTML = draft.map((c, i) => `
+    <div class="clsrow" data-i="${i}">
+      <i style="--c:${PALETTE[i % PALETTE.length]}"></i>
+      <b class="ix">${i}</b>
+      <input class="inp nm" value="${esc(c.name)}" placeholder="class name">
+      <span class="use">${c.id === null ? 'new'
+        : (usage[c.id] ? usage[c.id] + ' boxes' : 'unused')}</span>
+      <button class="mv" data-d="-1" title="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
+      <button class="mv" data-d="1" title="Move down" ${i === draft.length - 1 ? 'disabled' : ''}>↓</button>
+      <button class="x" title="Delete this class">×</button>
+    </div>`).join('');
+
+  $('#clsrows').querySelectorAll('.clsrow').forEach(row => {
+    const i = +row.dataset.i;
+    row.querySelector('.nm').oninput = e => { draft[i].name = e.target.value; previewImpact(); };
+    row.querySelectorAll('.mv').forEach(b => b.onclick = () => {
+      const j = i + (+b.dataset.d);
+      if (j < 0 || j >= draft.length) return;
+      [draft[i], draft[j]] = [draft[j], draft[i]];
+      renderDraft(); previewImpact();
+    });
+    row.querySelector('.x').onclick = () => {
+      if (draft.length === 1) { toast('At least one class is needed', 'err'); return; }
+      draft.splice(i, 1); renderDraft(); previewImpact();
+    };
+  });
+  previewImpact();
+}
+
+function previewImpact() {
+  const moved = [], dropped = [];
+  draft.forEach((c, i) => { if (c.id !== null && c.id !== i) moved.push(c.name); });
+  classes.forEach(c => { if (!draft.some(d => d.id === c.id)) dropped.push(c); });
+  const movedBoxes = draft.reduce((n, c, i) =>
+    n + (c.id !== null && c.id !== i ? (usage[c.id] || 0) : 0), 0);
+  const lostBoxes = dropped.reduce((n, c) => n + (usage[c.id] || 0), 0);
+
+  const bits = [];
+  if (movedBoxes) bits.push(`${movedBoxes} box(es) renumbered`);
+  if (lostBoxes) bits.push(`${lostBoxes} box(es) deleted`);
+  $('#clsimpact').textContent = bits.length ? '— ' + bits.join(', ') : '— nothing to rewrite';
+
+  const w = $('#clswarn');
+  if (!moved.length && !dropped.length) { w.classList.add('hidden'); return; }
+  w.classList.remove('hidden');
+  const apply = $('#clsapply').checked;
+  w.innerHTML = apply
+    ? `Labels will be rewritten: ${bits.join(', ') || 'no boxes affected'}.` +
+      (lostBoxes ? ` Boxes of a deleted class are removed — that cannot be undone.` : '')
+    : `Labels will be left alone, so ${movedBoxes + lostBoxes} box(es) will point at the wrong
+       class. Tick the box above unless you know you want that.`;
+}
+
+$('#clsadd').onclick = () => { draft.push({id: null, name: ''}); renderDraft(); };
+$('#clsapply').onchange = previewImpact;
+$('#clscancel').onclick = () => $('#clsveil').classList.remove('on');
+
 $('#editclasses').onclick = async () => {
-  const cur = classes.map(c => c.name).join('\n');
-  const ok = await confirmDialog({
-    title: 'Classes',
-    body: `<p>One per line. The line number is the class index, and labels on disk refer to
-           classes by that number — so renaming in place is safe and reordering is not.</p>
-           <textarea id="clsta" class="ta" spellcheck="false">${esc(cur)}</textarea>`,
-    okLabel: 'Save classes', danger: false});
-  if (!ok) return;
-  const lines = ($('#clsta') ? $('#clsta').value : cur).split('\n');
+  if (!root) { toast('Pick a folder first', 'err'); return; }
+  draft = classes.map(c => ({id: c.id, name: c.name}));
+  usage = {};
+  $('#clsveil').classList.add('on');
+  renderDraft();
   try {
-    const r = await post('/api/classes', {classes: lines});
+    const u = await api('/api/class-usage');
+    usage = u.usage; renderDraft();
+  } catch (e) { /* counts are a nicety; the dialog works without them */ }
+};
+
+$('#clssave').onclick = async () => {
+  const payload = draft.map(c => ({id: c.id, name: c.name}))
+                       .filter(c => c.name.trim());
+  if (!payload.length) { toast('At least one class is needed', 'err'); return; }
+  try {
+    const r = await post('/api/classes',
+                         {classes: payload, apply_to_labels: $('#clsapply').checked});
     classes = r.classes;
     if (activeClass >= classes.length) activeClass = 0;
     renderClassBar(); renderClassList();
-    toast(r.warning || 'Classes saved', r.warning ? 'err' : 'ok');
+    $('#clsveil').classList.remove('on');
+    const a = r.applied || {};
+    if (a.files) toast(`Classes saved — ${a.moved} box(es) renumbered, ` +
+                       `${a.dropped} removed, across ${a.files} file(s)`, 'ok');
+    else toast(r.warning || 'Classes saved', r.warning ? 'err' : 'ok');
+    if (folder) { await refreshFolderCounts(); await loadFrames(); }
+    if (cur && document.body.dataset.view === 'annotate') openFrame(cur, true);
   } catch (e) { toast(e.message, 'err'); }
 };
 
@@ -534,9 +645,15 @@ function loupe(px, py) {
   const el = $('#loupe');
   if (!img.complete || !iw || draw_ || grab) { el.style.display = 'none'; return; }
   const [ix, iy] = toImg(px, py), Z = 8, R = 210 / Z;
+  const S = 214, GAP = 26;                      // 210 canvas + 2px border each side
+  // Put the loupe in the quadrant opposite the cursor. Clamping it to the edge instead, which
+  // is what it used to do, parked it exactly over the corner of a full-size image - the one
+  // place you cannot then see well enough to draw a box.
+  const left = px > cv.width / 2 ? px - GAP - S : px + GAP;
+  const top = py > cv.height / 2 ? py - GAP - S : py + GAP;
   el.style.display = 'block';
-  el.style.left = Math.min(px + 24, cv.width - 218) + 'px';
-  el.style.top = Math.max(py - 230, 8) + 'px';
+  el.style.left = Math.max(4, Math.min(left, cv.width - S - 4)) + 'px';
+  el.style.top = Math.max(4, Math.min(top, cv.height - S - 4)) + 'px';
   lctx.imageSmoothingEnabled = false;
   lctx.fillStyle = '#000'; lctx.fillRect(0, 0, 210, 210);
   lctx.drawImage(img, ix - R / 2, iy - R / 2, R, R, 0, 0, 210, 210);

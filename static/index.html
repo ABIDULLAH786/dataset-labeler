@@ -28,6 +28,11 @@
       A folder with images and no labels at all is fine — every frame simply starts as
       <b>Unassigned</b>, and nothing is written until you label something.
     </p>
+    <div class="pickrow">
+      <button class="btn" id="osdialog">Browse…</button>
+      <input id="pathbox" class="inp grow" placeholder="…or paste a path and press Enter"
+             autocomplete="off" spellcheck="false">
+    </div>
     <div id="crumbs" class="crumbs"></div>
     <div id="dirlist" class="dirlist"></div>
     <div class="browse-foot">
@@ -120,6 +125,26 @@
 </section>
 
 <div id="toasts"></div>
+
+<div id="clsveil">
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="clst">
+    <h3 id="clst">Classes</h3>
+    <div class="body">
+      <p>Labels on disk refer to a class by its <b>number</b>, not its name. Renaming is always
+         safe. Deleting or reordering changes what existing boxes mean — tick the box below and
+         the labels are rewritten to match.</p>
+      <div id="clsrows" class="clsrows"></div>
+      <button class="btn" id="clsadd">+ Add class</button>
+      <label class="applyrow"><input type="checkbox" id="clsapply" checked>
+        <span>Rewrite labels to match <i id="clsimpact"></i></span></label>
+      <div id="clswarn" class="warn hidden"></div>
+    </div>
+    <div class="acts">
+      <button class="btn" id="clscancel">Cancel</button>
+      <button class="btn pri" id="clssave">Save classes</button>
+    </div>
+  </div>
+</div>
 
 <div id="veil">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mt">

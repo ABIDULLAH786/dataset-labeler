@@ -68,6 +68,7 @@ app = FastAPI(title="Drone Labeller")
 BASE: Path = Path.home()          # the sandbox the browser may not climb out of
 ROOT: Path | None = None          # the folder currently being worked in
 MODEL_PATH: str | None = None
+LOCK_BASE = False            # refuse to follow a chosen folder out of --base
 _model = None
 _clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
 
@@ -375,7 +376,7 @@ def index():
 @app.get("/api/state")
 def state():
     return {"base": str(BASE), "root": str(ROOT) if ROOT else None,
-            "model": bool(MODEL_PATH)}
+            "model": bool(MODEL_PATH), "locked": LOCK_BASE}
 
 
 def scan(d: Path) -> dict:
@@ -422,20 +423,92 @@ def browse(path: str = ""):
             "self": scan(d), "dirs": kids}
 
 
+@app.post("/api/pick")
+def pick_folder():
+    """
+    Open the desktop's own folder chooser and return what was picked.
+
+    A browser cannot hand back a real filesystem path - <input webkitdirectory> gives file
+    contents and no location, by design. But this server runs on the same machine as the
+    browser, so it can open the native dialog itself. Tried in order of what desktops
+    actually have: zenity (GNOME), kdialog (KDE), then tkinter.
+    """
+    import shutil as sh
+    import subprocess
+    start = str(ROOT or BASE)
+
+    for argv in ([sh.which("zenity"), "--file-selection", "--directory",
+                  "--title=Choose a folder to label", f"--filename={start}/"],
+                 [sh.which("kdialog"), "--getexistingdirectory", start]):
+        if not argv[0]:
+            continue
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0 and r.stdout.strip():
+            return {"path": r.stdout.strip()}
+        if r.returncode in (1, 252):              # the person cancelled
+            return {"path": None}
+
+    try:
+        import tkinter
+        from tkinter import filedialog
+        win = tkinter.Tk()
+        win.withdraw()
+        win.attributes("-topmost", True)
+        got = filedialog.askdirectory(initialdir=start, title="Choose a folder to label")
+        win.destroy()
+        return {"path": got or None}
+    except Exception:
+        raise HTTPException(501, "no desktop folder dialog available - "
+                                 "install zenity, or type the path instead")
+
+
 class RootReq(BaseModel):
     path: str
 
 
+@app.post("/api/base")
+def set_base(req: RootReq):
+    """
+    Move the browsable base, without scanning anything.
+
+    /api/browse stays bounded so a stray URL cannot walk the disk, but a folder chosen from the
+    desktop dialog or typed in deliberately is allowed to land anywhere. This is how it gets
+    there: widen first, then browse normally.
+    """
+    global BASE
+    d = Path(req.path).expanduser().resolve()
+    if not d.is_dir():
+        raise HTTPException(404, f"no such directory: {d}")
+    if not inside(d, BASE):
+        if LOCK_BASE:
+            raise HTTPException(400, f"outside the locked base ({BASE})")
+        BASE = d.parent if d.parent != d else d
+    return {"base": str(BASE)}
+
+
 @app.post("/api/root")
 def set_root(req: RootReq):
-    global ROOT
+    """
+    Select the folder to work in.
+
+    Picking from the desktop dialog, or typing a path, is a deliberate act by whoever is at the
+    keyboard, so it is allowed to land outside the current base and the base moves to its
+    parent. Only --lock-base refuses, for anyone who wants the tool pinned to one tree. Casual
+    browsing is still bounded: /api/browse never leaves the base.
+    """
+    global ROOT, BASE
     d = Path(req.path).expanduser().resolve()
-    if not inside(d, BASE):
-        raise HTTPException(400, "outside the browsable base")
     if not d.is_dir():
-        raise HTTPException(404, "no such directory")
+        raise HTTPException(404, f"no such directory: {d}")
+    if not inside(d, BASE):
+        if LOCK_BASE:
+            raise HTTPException(400, f"outside the locked base ({BASE})")
+        BASE = d.parent if d.parent != d else d
     ROOT = d
-    return {"root": str(ROOT), "folders": folders()}
+    return {"root": str(ROOT), "base": str(BASE), "folders": folders()}
 
 
 @app.get("/api/folders")
@@ -482,43 +555,117 @@ def get_classes():
     return classes_payload()
 
 
+def all_label_files():
+    """Every label file under the selected root, both layouts."""
+    root = active_root()
+    out, seen = [], set()
+    for f in folders():
+        d = folder_dir(f["name"])
+        ld = label_dir(d)
+        for p in images_of(d):
+            lp = ld / (p.stem + ".txt")
+            if lp.exists() and lp not in seen:
+                seen.add(lp)
+                out.append(lp)
+    return out
+
+
+@app.get("/api/class-usage")
+def class_usage():
+    """How many boxes point at each class index, across the whole selected root."""
+    use = {}
+    files = 0
+    for lp in all_label_files():
+        files += 1
+        for line in lp.read_text().splitlines():
+            t = line.split()
+            if len(t) != 5:
+                continue
+            try:
+                c = int(float(t[0]))
+            except ValueError:
+                continue
+            use[c] = use.get(c, 0) + 1
+    return {"usage": use, "files": files}
+
+
+class ClassItem(BaseModel):
+    id: int | None = None          # the index this class had before, or null when it is new
+    name: str
+
+
 class ClassReq(BaseModel):
-    classes: list
+    classes: list[ClassItem]
+    apply_to_labels: bool = False
 
 
 @app.post("/api/classes")
 def set_classes(req: ClassReq):
-    names, seen = [], set()
-    for raw in req.classes:
-        n = str(raw).strip().replace("\n", " ")
+    """
+    Save the class list, and - when asked - rewrite the labels to match.
+
+    Classes are positional: a label file says `2 0.51 0.44 ...`, not `plane`. So renaming,
+    reordering and deleting are not edits to a list of words, they change what every box
+    already on disk means. Each item carries the index it HELD BEFORE, which is what makes the
+    difference knowable: same id at a new position is a move, a new name on an old id is a
+    rename, a missing id is a deletion. Without that the two are indistinguishable, and a
+    rename gets treated as delete-plus-add.
+    """
+    names, ids, seen = [], [], set()
+    for item in req.classes:
+        n = item.name.strip().replace("\n", " ")
         if not n or n.lower() in seen:
             continue
         seen.add(n.lower())
         names.append(n)
+        ids.append(item.id)
     if not names:
         raise HTTPException(400, "need at least one class")
 
-    # Class indices are positional, and labels on disk refer to a class by its number. So the
-    # test has to be positional too: changing the NAME at an index is a rename and is safe,
-    # because every box pointing there still means the same thing. Moving a name to a different
-    # index, or shortening the list, is not - those boxes now point at something else, or at
-    # nothing. Comparing by name instead reports a rename as a deletion, which is noise.
     before = read_classes()
-    moved = [n for n in before if n in names and names.index(n) != before.index(n)]
-    lost = max(0, len(before) - len(names))
+    remap = {}                                   # old index -> new index, absent = deleted
+    for new_i, old_i in enumerate(ids):
+        if old_i is not None and 0 <= old_i < len(before):
+            remap[old_i] = new_i
+    dropped = [i for i in range(len(before)) if i not in remap]
+    moved = [before[o] for o, n in remap.items() if o != n]
+
+    changed_boxes = dropped_boxes = touched = 0
+    if req.apply_to_labels and (dropped or moved):
+        for lp in all_label_files():
+            lines, hit = [], False
+            for line in lp.read_text().splitlines():
+                t = line.split()
+                if len(t) != 5:
+                    continue
+                try:
+                    c = int(float(t[0]))
+                except ValueError:
+                    continue
+                if c in remap:
+                    if remap[c] != c:
+                        hit = True
+                        changed_boxes += 1
+                    lines.append(" ".join([str(remap[c])] + t[1:]))
+                else:
+                    hit = True
+                    dropped_boxes += 1          # its class no longer exists: the box goes
+            if hit:
+                lp.write_text("\n".join(lines) + ("\n" if lines else ""))
+                touched += 1
 
     classes_file().write_text("".join(n + "\n" for n in names))
     out = classes_payload()
     out["warning"] = ""
-    bits = []
-    if moved:
-        bits.append(f"{len(moved)} class(es) changed index ({', '.join(moved[:4])})")
-    if lost:
-        bits.append(f"the list is {lost} shorter, so boxes with class {len(names)} and above "
-                    f"no longer point at anything")
-    if bits:
-        out["warning"] = ("; ".join(bits) + " - labels already on disk refer to classes by "
-                          "number, so those boxes now mean something else")
+    out["applied"] = {"files": touched, "moved": changed_boxes, "dropped": dropped_boxes}
+    if (dropped or moved) and not req.apply_to_labels:
+        bits = []
+        if moved:
+            bits.append(f"{len(moved)} class(es) changed index ({', '.join(moved[:4])})")
+        if dropped:
+            bits.append(f"{len(dropped)} deleted ({', '.join(before[i] for i in dropped[:4])})")
+        out["warning"] = ("; ".join(bits) + " - labels on disk were left alone, so boxes "
+                          "pointing at those indices now mean something else")
     return out
 
 
@@ -835,12 +982,14 @@ def snap(req: SnapReq):
 
 
 def main():
-    global BASE, ROOT, MODEL_PATH
+    global BASE, ROOT, MODEL_PATH, LOCK_BASE
     ap = argparse.ArgumentParser(description="Local web labeller for folders of frames.")
     ap.add_argument("--root", type=Path, default=None,
                     help="folder to open with (otherwise pick one in the browser)")
     ap.add_argument("--base", type=Path, default=None,
-                    help="the only tree the folder browser may enter (default: your home)")
+                    help="where the folder browser starts (default: your home)")
+    ap.add_argument("--lock-base", action="store_true",
+                    help="refuse to open any folder outside --base")
     ap.add_argument("--model", default=None,
                     help="optional YOLO weights, enables assisted candidates")
     ap.add_argument("--host", default="127.0.0.1")
@@ -857,6 +1006,7 @@ def main():
         if not inside(ROOT, BASE):
             sys.exit(f"--root must sit inside --base ({BASE})")
     MODEL_PATH = args.model
+    LOCK_BASE = args.lock_base
 
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     import uvicorn
