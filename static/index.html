@@ -8,49 +8,116 @@
 </head>
 <body>
 
-<div class="pane" id="left">
-  <h2 class="ph">Folders</h2>
-  <div id="folders"></div>
-  <div id="filters">
-    <button data-f="all" class="on">All<b id="c-all">0</b></button>
-    <button data-f="yes">Boxed<b id="c-yes">0</b></button>
-    <button data-f="no">Blank<b id="c-no">0</b></button>
-    <button data-f="check">Check<b id="c-check">0</b></button>
-  </div>
-  <h2 class="ph">Frames <span class="n" id="fcount"></span></h2>
-  <div id="frames"></div>
-</div>
+<header id="top">
+  <div class="brand">Drone&nbsp;Labeller</div>
+  <button class="btn" id="pick">Change folder</button>
+  <div id="rootpath" class="path">no folder selected</div>
+  <span class="sp"></span>
+  <div id="classbar" class="classbar"></div>
+  <button class="btn" id="editclasses" title="Add or rename classes">Classes</button>
+  <span id="modelbadge" class="badge">imaging only</span>
+</header>
 
-<div id="mid">
-  <div id="bar">
-    <button class="btn" id="prev">← Prev</button>
-    <button class="btn" id="next">Next →</button>
-    <span id="pos"></span>
-    <button class="btn" id="enh" title="Contrast enhance for viewing (E)">Contrast</button>
-    <button class="btn" id="fit" title="Fit to window (F)">Fit</button>
-    <span id="title">—</span>
-    <span class="sp"></span>
-    <button class="btn" id="ai" title="Run the detectors (A)">AI assist</button>
-    <button class="btn" id="blank" title="Mark as having no drone (B)">No drone</button>
-    <button class="btn pri" id="save" title="Save (S) — also saves automatically on navigate">Save</button>
-    <button class="btn danger" id="del" title="Delete this frame entirely">Delete frame</button>
-  </div>
-  <div id="stage">
-    <canvas id="cv"></canvas>
-    <div id="loupe"><canvas id="lp" width="210" height="210"></canvas></div>
-    <div id="hint">
-      <b>click</b> snap · <b>drag</b> draw · <b>click box</b> select, then drag to move or pull a
-      handle · <b>wheel</b> zoom · <b>space-drag</b> pan · <b>Del</b> remove · saves on navigate
+<!-- ============================================================ browse -->
+<section id="view-browse" class="view">
+  <div class="browse-wrap">
+    <h1>Choose a folder to label</h1>
+    <p class="lede">
+      Any folder holding images works. Two layouts are read and written in place:
+      <b>images/ + labels/</b>, or a <b>flat</b> folder with the .txt beside each .jpg.
+      A folder with images and no labels at all is fine — every frame simply starts as
+      <b>Unassigned</b>, and nothing is written until you label something.
+    </p>
+    <div id="crumbs" class="crumbs"></div>
+    <div id="dirlist" class="dirlist"></div>
+    <div class="browse-foot">
+      <span id="selfinfo" class="dim"></span>
+      <button class="btn pri" id="usehere">Use this folder</button>
     </div>
   </div>
-</div>
+</section>
 
-<div class="pane" id="right">
-  <h2 class="ph">Boxes <span class="n" id="bcount"></span></h2>
-  <div id="boxes"></div>
-  <h2 class="ph">Assisted candidates</h2>
-  <div id="cands"><div class="empty">Press <b>A</b> to run the detectors.</div></div>
-</div>
+<!-- ============================================================ gallery -->
+<section id="view-gallery" class="view">
+  <div class="pane" id="g-left">
+    <h2 class="ph">Folders <span class="n" id="folder-n"></span></h2>
+    <div id="folders"></div>
+  </div>
+
+  <div id="g-main">
+    <div id="tabs"></div>
+    <div id="g-bar">
+      <input id="search" class="inp" placeholder="Filter by filename…" autocomplete="off">
+      <span class="sp"></span>
+      <label class="dim">per page</label>
+      <select id="per" class="inp narrow">
+        <option>24</option><option selected>60</option><option>120</option><option>240</option>
+      </select>
+      <button class="btn" id="selall">Select all on page</button>
+      <button class="btn" id="annotate-first">Start annotating</button>
+    </div>
+
+    <div id="batchbar" class="hidden">
+      <b id="nsel">0</b> selected
+      <span class="sp"></span>
+      <button class="btn" id="b-null" title="Mark as containing nothing (N)">Mark null</button>
+      <button class="btn" id="b-reject">Reject</button>
+      <button class="btn" id="b-restore">Un-reject</button>
+      <button class="btn" id="b-clear">Clear labels</button>
+      <button class="btn danger" id="b-del">Delete</button>
+      <button class="btn" id="b-none">Clear selection</button>
+    </div>
+
+    <div id="grid"></div>
+    <div id="pager"></div>
+  </div>
+</section>
+
+<!-- ============================================================ annotate -->
+<section id="view-annotate" class="view">
+  <div class="pane" id="a-left">
+    <h2 class="ph">Frames <span class="n" id="fcount"></span></h2>
+    <div id="frames"></div>
+  </div>
+
+  <div id="mid">
+    <div id="bar">
+      <button class="btn" id="back">← Gallery</button>
+      <button class="btn" id="prev" title="Previous (←)">← Prev</button>
+      <button class="btn" id="next" title="Next (→)">Next →</button>
+      <span id="pos"></span>
+      <button class="btn" id="enh" title="Contrast enhance for viewing (E)">Contrast</button>
+      <button class="btn" id="fit" title="Fit to window (0)">Fit</button>
+      <span id="title">—</span>
+      <span class="sp"></span>
+      <button class="btn" id="ai" title="Run the detectors (A)">AI assist</button>
+      <button class="btn" id="blank" title="Mark null — nothing in this frame (N)">Mark null</button>
+      <button class="btn" id="reject" title="Reject this frame (R)">Reject</button>
+      <button class="btn pri" id="save" title="Save (S) — also saves on navigate">Save</button>
+      <button class="btn danger" id="del" title="Delete this frame entirely">Delete</button>
+    </div>
+    <div id="stage">
+      <canvas id="cv"></canvas>
+      <div id="loupe"><canvas id="lp" width="210" height="210"></canvas></div>
+      <div id="hint">
+        <b>click</b> snap · <b>drag</b> draw · <b>click box</b> select, then drag or pull a
+        handle · <b>wheel</b> zoom · <b>space-drag</b> pan · <b>↑↓</b> class · <b>Del</b> remove
+      </div>
+    </div>
+  </div>
+
+  <div class="pane" id="a-right">
+    <h2 class="ph">Class</h2>
+    <div id="classpick">
+      <input id="classfilter" class="inp" placeholder="Filter or create a class…" autocomplete="off">
+      <div id="classlist"></div>
+    </div>
+    <h2 class="ph">Boxes <span class="n" id="bcount"></span></h2>
+    <div id="boxes"></div>
+    <h2 class="ph">Assisted candidates</h2>
+    <div id="cands"><div class="empty">Press <b>A</b> to run the detectors.</div></div>
+  </div>
+</section>
 
 <div id="toasts"></div>
 

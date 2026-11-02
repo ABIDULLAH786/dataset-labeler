@@ -1,168 +1,464 @@
-/* Drone Labeller — client.
+/*
+ * Drone Labeller - browser side.
  *
- * Three behaviours worth knowing before reading the code:
- *   - there is no unsaved-changes prompt. Navigating saves. A prompt on every frame is friction
- *     in a job that is hundreds of frames long.
- *   - next/prev walk the FILTERED list. With "Blank" selected, Next goes to the next blank
- *     frame, not the next frame in the folder.
- *   - a selected box can be dragged to move or pulled by one of eight handles to resize, the
- *     way an annotation tool is expected to behave.
+ * Three views, switched by setView: browse (pick a folder), gallery (cards, tabs, pages) and
+ * annotate (canvas). The gallery exists because scanning a folder one frame at a time tells you
+ * nothing about the folder; the annotate view exists because an 8 px target cannot be judged
+ * from a card.
+ *
+ * A box is [x0, y0, x1, y1, cls] in IMAGE pixels. The first four indices are the geometry the
+ * canvas code works in; the fifth is the class index, which is what goes in column one of the
+ * YOLO label. Conversion to and from the server's object form happens only at the boundary.
  */
 const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
 const cv = $('#cv'), ctx = cv.getContext('2d');
 const lp = $('#lp'), lctx = lp.getContext('2d');
 
-let folder = null, frames = [], cur = null, filter = 'all';
+let base = null, root = null;
+let browsePath = null, browseSelf = null;
+let folder = null, folders = [], frames = [], cur = null;
+let status_ = 'all', page = 1, per = 60, query = '';
+let counts = {}, pages = 1, selected = new Set();
+let classes = [], activeClass = 0, classHi = 0;
+
 let img = new Image(), iw = 0, ih = 0;
-let view = {x: 0, y: 0, s: 1};
+let viewport = {x: 0, y: 0, s: 1};
 let boxes = [], sel = -1, cands = [], candHi = -1;
 let draw_ = null, pan = null, grab = null, space = false;
 let enhance = false, dirty = false, busy = false;
 
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const HS = 7;                                   // handle hit size, screen px
+const STATUSES = [['all', 'All'], ['unassigned', 'Unassigned'], ['annotated', 'Annotated'],
+                  ['null', 'Null'], ['rejected', 'Rejected']];
 
-/* ---------------------------------------------------------------- util */
+/* ---------------------------------------------------------------- plumbing */
 function toast(msg, kind) {
-  const t = document.createElement('div');
-  t.className = 'toast ' + (kind || '');
-  t.textContent = msg;
-  $('#toasts').appendChild(t);
-  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .25s'; }, 2200);
-  setTimeout(() => t.remove(), 2550);
+  const el = document.createElement('div');
+  el.className = 'toast' + (kind ? ' ' + kind : '');
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), 3600);
 }
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.text()).slice(0, 180));
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
   return r.json();
 }
+
+const post = (path, body) => api(path, {
+  method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
 
 function confirmDialog({title, body, okLabel = 'Delete', danger = true}) {
   return new Promise(resolve => {
     $('#mt').textContent = title;
     $('#mb').innerHTML = body;
-    const ok = $('#mok'), cancel = $('#mcancel');
+    const ok = $('#mok');
     ok.textContent = okLabel;
     ok.className = 'btn ' + (danger ? 'destroy' : 'pri');
     $('#veil').classList.add('on');
     const done = v => {
       $('#veil').classList.remove('on');
-      ok.onclick = cancel.onclick = null;
-      document.removeEventListener('keydown', esc, true);
+      ok.onclick = null; $('#mcancel').onclick = null;
+      document.removeEventListener('keydown', key, true);
       resolve(v);
     };
-    const esc = e => {
+    const key = e => {
       if (e.key === 'Escape') { e.stopPropagation(); done(false); }
       if (e.key === 'Enter') { e.stopPropagation(); done(true); }
     };
     ok.onclick = () => done(true);
-    cancel.onclick = () => done(false);
-    document.addEventListener('keydown', esc, true);
+    $('#mcancel').onclick = () => done(false);
+    document.addEventListener('keydown', key, true);
     ok.focus();
   });
 }
 
-/* ---------------------------------------------------------------- data */
-async function loadFolders() {
-  const fs = await api('/api/folders');
-  $('#folders').innerHTML = fs.map(f =>
-    `<div class="fo" data-n="${f.name}">${f.name}<small>${f.count} frames</small></div>`).join('');
+function setView(v) {
+  $$('.view').forEach(s => s.classList.remove('on'));
+  $('#view-' + v).classList.add('on');
+  document.body.dataset.view = v;
+  if (v === 'annotate') requestAnimationFrame(() => { fitView(); render(); });
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, c =>
+  ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+/* ---------------------------------------------------------------- browse */
+async function openBrowse(path) {
+  const r = await api('/api/browse?path=' + encodeURIComponent(path || ''));
+  browsePath = r.path; browseSelf = r.self;
+  setView('browse');
+
+  const parts = r.path.split('/').filter(Boolean);
+  let acc = '';
+  const crumbs = [`<a data-p="/">/</a>`].concat(parts.map(p => {
+    acc += '/' + p;
+    return `<a data-p="${esc(acc)}">${esc(p)}</a>`;
+  }));
+  $('#crumbs').innerHTML = crumbs.join('<i>›</i>');
+  $('#crumbs').querySelectorAll('a').forEach(a =>
+    a.onclick = () => openBrowse(a.dataset.p));
+
+  const up = r.parent ? `<div class="dir up" data-p="${esc(r.parent)}">
+      <div class="dn">↑ up one level</div></div>` : '';
+  $('#dirlist').innerHTML = up + (r.dirs.length ? r.dirs.map(d => {
+    const badge = d.layout
+      ? `<span class="tag ok">${d.images} images</span>
+         <span class="tag">${d.labelled} labelled</span>
+         <span class="tag dimtag">${esc(d.layout)}</span>`
+      : (d.deep_images ? `<span class="tag dimtag">${d.deep_images} images deeper in</span>`
+                       : `<span class="tag dimtag">no images</span>`);
+    return `<div class="dir${d.layout ? ' has' : ''}" data-p="${esc(d.path)}">
+              <div class="dn">${esc(d.name)}</div><div class="dt">${badge}</div></div>`;
+  }).join('') : '<div class="empty">Nothing in here.</div>');
+
+  $('#dirlist').querySelectorAll('.dir').forEach(el =>
+    el.onclick = () => openBrowse(el.dataset.p));
+
+  const s = r.self;
+  $('#selfinfo').textContent = s.layout
+    ? `${r.path} — ${s.images} images, ${s.labelled} already labelled, ${s.layout} layout`
+    : `${r.path} — no images directly here, but subfolders may hold them`;
+  $('#usehere').textContent = s.layout ? 'Use this folder' : 'Use this folder anyway';
+}
+
+$('#usehere').onclick = async () => {
+  const r = await post('/api/root', {path: browsePath});
+  root = r.root; folders = r.folders;
+  $('#rootpath').textContent = root;
+  await loadClasses();
+  if (!folders.length) {
+    toast('No images found under that folder', 'err');
+    return;
+  }
+  await selectFolder(folders[0].name);
+};
+
+$('#pick').onclick = () => openBrowse(root || base);
+
+/* ---------------------------------------------------------------- classes */
+async function loadClasses() {
+  const r = await api('/api/classes');
+  classes = r.classes;
+  if (activeClass >= classes.length) activeClass = 0;
+  classHi = activeClass;
+  renderClassBar();
+  renderClassList();
+}
+
+function renderClassBar() {
+  $('#classbar').innerHTML = classes.slice(0, 8).map(c =>
+    `<button class="chip${c.id === activeClass ? ' on' : ''}" data-c="${c.id}"
+       style="--c:${c.color}" title="${esc(c.name)} — class ${c.id}">
+       <i></i>${esc(c.name)}<b>${c.id}</b></button>`).join('');
+  $('#classbar').querySelectorAll('.chip').forEach(b =>
+    b.onclick = () => setActiveClass(+b.dataset.c));
+}
+
+function setActiveClass(id) {
+  activeClass = id; classHi = id;
+  renderClassBar(); renderClassList();
+  if (sel >= 0) { boxes[sel][4] = id; dirty = true; renderBoxes(); render(); }
+}
+
+function renderClassList() {
+  const q = ($('#classfilter').value || '').toLowerCase();
+  const hits = classes.filter(c => c.name.toLowerCase().includes(q));
+  const mk = c => `<div class="cl${c.id === classHi ? ' hi' : ''}${c.id === activeClass ? ' act' : ''}"
+       data-c="${c.id}" style="--c:${c.color}"><i></i>${esc(c.name)}<b>${c.id}</b></div>`;
+  let html = hits.map(mk).join('');
+  if (q && !classes.some(c => c.name.toLowerCase() === q))
+    html += `<div class="cl create" data-new="1">+ create class “${esc($('#classfilter').value)}”</div>`;
+  $('#classlist').innerHTML = html || '<div class="empty">No class matches.</div>';
+  $('#classlist').querySelectorAll('.cl').forEach(el => el.onclick = () => {
+    if (el.dataset.new) addClass($('#classfilter').value);
+    else setActiveClass(+el.dataset.c);
+  });
+}
+
+async function addClass(name) {
+  name = (name || '').trim();
+  if (!name) return;
+  const names = classes.map(c => c.name).concat([name]);
+  const r = await post('/api/classes', {classes: names});
+  classes = r.classes;
+  $('#classfilter').value = '';
+  setActiveClass(classes.length - 1);
+  toast(`Class “${name}” added as index ${classes.length - 1}`, 'ok');
+}
+
+$('#classfilter').addEventListener('input', renderClassList);
+$('#classfilter').addEventListener('keydown', e => {
+  const hits = classes.filter(c =>
+    c.name.toLowerCase().includes(($('#classfilter').value || '').toLowerCase()));
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (hits.length) setActiveClass(hits.some(c => c.id === classHi) ? classHi : hits[0].id);
+    else addClass($('#classfilter').value);
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!hits.length) return;
+    let i = hits.findIndex(c => c.id === classHi);
+    i = (i + (e.key === 'ArrowDown' ? 1 : -1) + hits.length) % hits.length;
+    classHi = hits[i].id;
+    renderClassList();
+  }
+  e.stopPropagation();
+});
+
+$('#editclasses').onclick = async () => {
+  const cur = classes.map(c => c.name).join('\n');
+  const ok = await confirmDialog({
+    title: 'Classes',
+    body: `<p>One per line. The line number is the class index, and labels on disk refer to
+           classes by that number — so renaming in place is safe and reordering is not.</p>
+           <textarea id="clsta" class="ta" spellcheck="false">${esc(cur)}</textarea>`,
+    okLabel: 'Save classes', danger: false});
+  if (!ok) return;
+  const lines = ($('#clsta') ? $('#clsta').value : cur).split('\n');
+  try {
+    const r = await post('/api/classes', {classes: lines});
+    classes = r.classes;
+    if (activeClass >= classes.length) activeClass = 0;
+    renderClassBar(); renderClassList();
+    toast(r.warning || 'Classes saved', r.warning ? 'err' : 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+};
+
+/* ---------------------------------------------------------------- folders */
+function renderFolders() {
+  $('#folder-n').textContent = folders.length || '';
+  $('#folders').innerHTML = folders.map(f => {
+    const i = f.name.lastIndexOf('/');
+    const group = i < 0 ? '' : `<em>${esc(f.name.slice(0, i))}</em>`;
+    const leaf = f.name === '.' ? '(this folder)' : f.name.slice(i + 1);
+    return `<div class="fo${f.name === folder ? ' on' : ''}" data-n="${esc(f.name)}"
+              title="${esc(f.name)} — ${esc(f.layout || '')}">
+              ${group}${esc(leaf)}
+              <small>${f.count} images · ${f.annotated} annotated · ${f.unassigned} unassigned</small>
+            </div>`;
+  }).join('');
   $('#folders').querySelectorAll('.fo').forEach(d =>
     d.onclick = () => selectFolder(d.dataset.n));
-  if (fs.length === 1) selectFolder(fs[0].name);
 }
 
 async function selectFolder(name) {
   folder = name;
-  $('#folders').querySelectorAll('.fo').forEach(d => d.classList.toggle('on', d.dataset.n === name));
-  frames = await api('/api/frames?folder=' + encodeURIComponent(name));
-  cur = null;
-  renderFrames();
-  const list = view_list();
-  if (list.length) open(list[0].name);
+  page = 1; selected.clear();
+  renderFolders();
+  await loadFrames();
+  setView('gallery');
 }
 
+/* ---------------------------------------------------------------- gallery */
+async function loadFrames() {
+  const r = await api(`/api/frames?folder=${encodeURIComponent(folder)}&status=${status_}` +
+                      `&page=${page}&per=${per}&q=${encodeURIComponent(query)}`);
+  frames = r.items; counts = r.counts; pages = r.pages; page = r.page;
+  renderTabs(); renderGrid(); renderPager(); renderBatch();
+}
+
+function renderTabs() {
+  $('#tabs').innerHTML = STATUSES.map(([k, label]) =>
+    `<button class="tab${k === status_ ? ' on' : ''}" data-s="${k}">${label}
+       <b>${counts[k] ?? 0}</b></button>`).join('');
+  $('#tabs').querySelectorAll('.tab').forEach(b => b.onclick = () => {
+    status_ = b.dataset.s; page = 1; loadFrames();
+  });
+}
+
+function thumbUrl(name) {
+  return `/api/thumb?folder=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}&w=320`;
+}
+
+function classChips(ids) {
+  return ids.map(i => {
+    const c = classes[i];
+    return `<span class="mini" style="--c:${c ? c.color : '#888'}">${
+      c ? esc(c.name) : 'class ' + i}</span>`;
+  }).join('');
+}
+
+function renderGrid() {
+  if (!frames.length) {
+    $('#grid').innerHTML = `<div class="empty big">Nothing in this tab.</div>`;
+    return;
+  }
+  $('#grid').innerHTML = frames.map(f => `
+    <div class="card${selected.has(f.name) ? ' sel' : ''}" data-n="${esc(f.name)}">
+      <div class="cbox"><input type="checkbox" ${selected.has(f.name) ? 'checked' : ''}></div>
+      <div class="ci"><img loading="lazy" src="${thumbUrl(f.name)}" alt=""></div>
+      <div class="cm">
+        <span class="dot ${f.status}" title="${f.status}"></span>
+        <span class="cn" title="${esc(f.name)}">${esc(f.name)}</span>
+        <span class="cb">${f.boxes || ''}</span>
+      </div>
+      <div class="cc">${classChips(f.classes)}${
+        f.note ? `<span class="mini warn">${esc(f.note.slice(0, 40))}</span>` : ''}</div>
+    </div>`).join('');
+
+  $('#grid').querySelectorAll('.card').forEach(el => {
+    const name = el.dataset.n;
+    el.querySelector('.cbox').onclick = e => {
+      e.stopPropagation();
+      selected.has(name) ? selected.delete(name) : selected.add(name);
+      el.classList.toggle('sel', selected.has(name));
+      el.querySelector('input').checked = selected.has(name);
+      renderBatch();
+    };
+    el.onclick = () => openFrame(name);
+  });
+}
+
+function renderPager() {
+  if (pages <= 1) { $('#pager').innerHTML = ''; return; }
+  const btn = (p, label, on) =>
+    `<button class="pg${on ? ' on' : ''}" data-p="${p}">${label}</button>`;
+  const near = [];
+  for (let p = Math.max(1, page - 2); p <= Math.min(pages, page + 2); p++)
+    near.push(btn(p, p, p === page));
+  $('#pager').innerHTML =
+    btn(Math.max(1, page - 1), '‹ prev', false) +
+    (page > 3 ? btn(1, '1', false) + '<i>…</i>' : '') +
+    near.join('') +
+    (page < pages - 2 ? '<i>…</i>' + btn(pages, pages, false) : '') +
+    btn(Math.min(pages, page + 1), 'next ›', false) +
+    `<span class="dim">page ${page} of ${pages}</span>`;
+  $('#pager').querySelectorAll('.pg').forEach(b => b.onclick = () => {
+    page = +b.dataset.p; loadFrames();
+  });
+}
+
+function renderBatch() {
+  const n = selected.size;
+  $('#batchbar').classList.toggle('hidden', !n);
+  $('#nsel').textContent = n;
+}
+
+$('#search').addEventListener('input', () => {
+  query = $('#search').value; page = 1;
+  clearTimeout(window._q); window._q = setTimeout(loadFrames, 220);
+});
+$('#per').onchange = () => { per = +$('#per').value; page = 1; loadFrames(); };
+$('#selall').onclick = () => {
+  frames.forEach(f => selected.add(f.name));
+  renderGrid(); renderBatch();
+};
+$('#b-none').onclick = () => { selected.clear(); renderGrid(); renderBatch(); };
+$('#annotate-first').onclick = () => frames.length && openFrame(frames[0].name);
+
+async function batch(status, label) {
+  const names = Array.from(selected);
+  await post('/api/status', {folder, names, status});
+  selected.clear();
+  toast(`${names.length} frame(s) ${label}`, 'ok');
+  await refreshFolderCounts();
+  await loadFrames();
+}
+$('#b-null').onclick = () => batch('null', 'marked null');
+$('#b-reject').onclick = () => batch('rejected', 'rejected');
+$('#b-restore').onclick = () => batch('unrejected', 'un-rejected');
+$('#b-clear').onclick = async () => {
+  const ok = await confirmDialog({
+    title: `Clear ${selected.size} label(s)?`,
+    body: `<p>The label files are deleted, so these frames go back to
+           <b>Unassigned</b> — as if nobody had looked at them. The images are untouched.</p>`,
+    okLabel: 'Clear labels'});
+  if (ok) batch('unassigned', 'cleared');
+};
+$('#b-del').onclick = async () => {
+  const names = Array.from(selected);
+  const ok = await confirmDialog({
+    title: `Delete ${names.length} frame(s)?`,
+    body: `<p>This removes the image, its label and any annotated/crops copies from disk.</p>
+           <ul>${names.slice(0, 8).map(n => `<li>${esc(n)}</li>`).join('')}</ul>
+           ${names.length > 8 ? `<p class="dim">…and ${names.length - 8} more.</p>` : ''}
+           <div class="warn">This cannot be undone.</div>`});
+  if (!ok) return;
+  await post('/api/delete', {folder, names});
+  selected.clear();
+  toast(`${names.length} frame(s) deleted`, 'ok');
+  await refreshFolderCounts();
+  await loadFrames();
+};
+
+async function refreshFolderCounts() {
+  folders = await api('/api/folders');
+  renderFolders();
+}
+
+/* ---------------------------------------------------------------- annotate */
 function isCheck(f) { return /CHECK/i.test(f.note || ''); }
 
-function view_list() {
-  return frames.filter(f =>
-    filter === 'all' ? true :
-    filter === 'yes' ? f.boxes > 0 :
-    filter === 'no' ? f.has_label && f.boxes === 0 :
-    isCheck(f));
-}
-
-function counts() {
-  $('#c-all').textContent = frames.length;
-  $('#c-yes').textContent = frames.filter(f => f.boxes > 0).length;
-  $('#c-no').textContent = frames.filter(f => f.has_label && f.boxes === 0).length;
-  $('#c-check').textContent = frames.filter(isCheck).length;
-}
-
-function renderFrames() {
-  const list = view_list();
-  counts();
-  $('#fcount').textContent = list.length + (filter === 'all' ? '' : ' of ' + frames.length);
-  $('#frames').innerHTML = list.length ? list.map(f => {
-    const cls = !f.has_label ? 'u' : f.boxes ? 'y' : 'n';
-    return `<div class="fr${f.name === cur ? ' on' : ''}" data-n="${f.name}">` +
-      `<span class="dot ${cls}"></span>${String(f.n).padStart(5, '0')}` +
-      `${isCheck(f) ? '<span class="chk">!</span>' : ''}` +
-      `<span class="cnt">${f.boxes || ''}</span></div>`;
-  }).join('') : '<div class="empty">No frames match this filter.</div>';
-  $('#frames').querySelectorAll('.fr').forEach(d => d.onclick = () => open(d.dataset.n));
+function renderFrameList() {
+  $('#fcount').textContent = frames.length ? `${frames.length}` : '';
+  $('#frames').innerHTML = frames.map(f =>
+    `<div class="fr${f.name === cur ? ' on' : ''}" data-n="${esc(f.name)}">
+       <span class="dot ${f.status}"></span>
+       <span class="fn">${esc(f.name)}</span>
+       ${isCheck(f) ? '<span class="chk">!</span>' : ''}
+       <span class="cnt">${f.boxes || ''}</span>
+     </div>`).join('');
+  $('#frames').querySelectorAll('.fr').forEach(d =>
+    d.onclick = () => openFrame(d.dataset.n));
   const on = $('#frames .fr.on');
   if (on) on.scrollIntoView({block: 'nearest'});
-  const i = list.findIndex(f => f.name === cur);
-  $('#pos').textContent = i >= 0 ? `${i + 1} / ${list.length}` : '';
-  $('#prev').disabled = i <= 0;
-  $('#next').disabled = i < 0 || i >= list.length - 1;
 }
 
-async function open(name, skipSave) {
-  if (!skipSave && dirty && cur) { await save(true); }
-  cur = name; sel = -1; cands = []; candHi = -1; dirty = false;
-  renderCands();
-  $('#title').textContent = name;
+async function openFrame(name, skipSave) {
+  if (dirty && cur && !skipSave) await save(true);
+  cur = name;
+  setView('annotate');
+  renderFrameList();
   const d = await api(`/api/label?folder=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}`);
-  iw = d.w; ih = d.h; boxes = d.boxes.map(b => b.slice());
+  iw = d.w; ih = d.h;
+  boxes = d.boxes.map(b => [b.x0, b.y0, b.x1, b.y1, b.cls]);
+  sel = -1; cands = []; candHi = -1; dirty = false;
+  $('#title').textContent = `${name}  ${iw}×${ih}`;
+  $('#reject').classList.toggle('on', !!d.rejected);
+  const i = frames.findIndex(f => f.name === name);
+  $('#pos').textContent = i >= 0 ? `${i + 1} / ${frames.length}` : '';
+  $('#cands').innerHTML = '<div class="empty">Press <b>A</b> to run the detectors.</div>';
+  renderBoxes();
   img = new Image();
-  img.onload = () => { fit(); render(); };
+  img.onload = () => { fitView(); render(); };
   img.src = imgUrl(name);
-  renderBoxes(); renderFrames();
 }
 
 function imgUrl(name) {
   return `/api/image?folder=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}` +
-         `&enhance=${enhance ? 1 : 0}&t=${Date.now()}`;
+         (enhance ? '&enhance=1' : '') + `&t=${Date.now()}`;
 }
 
 function step(delta) {
-  const list = view_list();
-  const i = list.findIndex(f => f.name === cur);
-  if (i < 0) { if (list.length) open(list[0].name); return; }
+  const i = frames.findIndex(f => f.name === cur);
   const j = i + delta;
-  if (j < 0 || j >= list.length) { toast(delta > 0 ? 'Last frame in this filter' : 'First frame in this filter'); return; }
-  open(list[j].name);
+  if (j < 0 || j >= frames.length) {
+    toast(delta > 0 ? 'Last frame on this page' : 'First frame on this page');
+    return;
+  }
+  openFrame(frames[j].name);
 }
 
-/* ---------------------------------------------------------------- canvas */
 function stageSize() { const r = $('#stage').getBoundingClientRect(); return [r.width, r.height]; }
 
-function fit() {
+function fitView() {
   const [W, H] = stageSize();
   cv.width = W; cv.height = H;
-  view.s = Math.min(W / iw, H / ih) * 0.96;
-  view.x = (W - iw * view.s) / 2;
-  view.y = (H - ih * view.s) / 2;
+  viewport.s = Math.min(W / iw, H / ih) * 0.96;
+  viewport.x = (W - iw * viewport.s) / 2;
+  viewport.y = (H - ih * viewport.s) / 2;
 }
 
-const toImg = (px, py) => [(px - view.x) / view.s, (py - view.y) / view.s];
-const toScr = (ix, iy) => [ix * view.s + view.x, iy * view.s + view.y];
+const toImg = (px, py) => [(px - viewport.x) / viewport.s, (py - viewport.y) / viewport.s];
+const toScr = (ix, iy) => [ix * viewport.s + viewport.x, iy * viewport.s + viewport.y];
 
 function norm(b) {
-  return [Math.min(b[0], b[2]), Math.min(b[1], b[3]), Math.max(b[0], b[2]), Math.max(b[1], b[3])];
+  return [Math.min(b[0], b[2]), Math.min(b[1], b[3]),
+          Math.max(b[0], b[2]), Math.max(b[1], b[3]), b[4] ?? activeClass];
 }
 
 function handlePoints(b) {
@@ -182,13 +478,16 @@ function hitHandle(px, py) {
   return null;
 }
 
+const colorOf = i => (classes[i] && classes[i].color) || '#ff4d4d';
+const nameOf = i => (classes[i] && classes[i].name) || ('class ' + i);
+
 function render() {
   const [W, H] = stageSize();
   if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
   ctx.fillStyle = '#07090c'; ctx.fillRect(0, 0, W, H);
   if (!img.complete || !iw) return;
-  ctx.imageSmoothingEnabled = view.s < 2;
-  ctx.drawImage(img, view.x, view.y, iw * view.s, ih * view.s);
+  ctx.imageSmoothingEnabled = viewport.s < 2;
+  ctx.drawImage(img, viewport.x, viewport.y, iw * viewport.s, ih * viewport.s);
 
   cands.forEach((c, i) => {
     const [x0, y0] = toScr(c.box[0], c.box[1]), [x1, y1] = toScr(c.box[2], c.box[3]);
@@ -201,15 +500,20 @@ function render() {
 
   boxes.forEach((b, i) => {
     const [x0, y0] = toScr(b[0], b[1]), [x1, y1] = toScr(b[2], b[3]);
-    ctx.strokeStyle = i === sel ? '#52c08a' : '#ff4d4d';
+    const col = colorOf(b[4]);
+    ctx.strokeStyle = i === sel ? '#ffffff' : col;
     ctx.lineWidth = i === sel ? 2 : 1.5;
     ctx.strokeRect(x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4);
-    ctx.fillStyle = ctx.strokeStyle;
     ctx.font = '11px ui-monospace,monospace';
-    ctx.fillText(`${Math.round(b[2] - b[0])}×${Math.round(b[3] - b[1])}`, x0 - 2, y0 - 8);
+    const tag = `${nameOf(b[4])} ${Math.round(b[2] - b[0])}×${Math.round(b[3] - b[1])}`;
+    const tw = ctx.measureText(tag).width + 6;
+    ctx.fillStyle = col;
+    ctx.fillRect(x0 - 2, y0 - 18, tw, 14);
+    ctx.fillStyle = '#10141a';
+    ctx.fillText(tag, x0 + 1, y0 - 7);
     if (i === sel) {
       const hp = handlePoints(b);
-      ctx.fillStyle = '#52c08a';
+      ctx.fillStyle = '#ffffff';
       ctx.strokeStyle = '#0e1116'; ctx.lineWidth = 1;
       for (const k of HANDLES) {
         const [hx, hy] = hp[k];
@@ -220,7 +524,7 @@ function render() {
   });
 
   if (draw_) {
-    ctx.strokeStyle = '#52c08a'; ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
+    ctx.strokeStyle = colorOf(activeClass); ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
     ctx.strokeRect(draw_.sx, draw_.sy, draw_.cx - draw_.sx, draw_.cy - draw_.sy);
     ctx.setLineDash([]);
   }
@@ -237,7 +541,7 @@ function loupe(px, py) {
   lctx.fillStyle = '#000'; lctx.fillRect(0, 0, 210, 210);
   lctx.drawImage(img, ix - R / 2, iy - R / 2, R, R, 0, 0, 210, 210);
   boxes.forEach(b => {
-    lctx.strokeStyle = '#ff4d4d'; lctx.lineWidth = 1;
+    lctx.strokeStyle = colorOf(b[4]); lctx.lineWidth = 1;
     lctx.strokeRect((b[0] - (ix - R / 2)) * Z, (b[1] - (iy - R / 2)) * Z,
                     (b[2] - b[0]) * Z, (b[3] - b[1]) * Z);
   });
@@ -261,9 +565,11 @@ stage.addEventListener('mousedown', e => {
   if (h) { grab = {mode: 'resize', h, start: boxes[sel].slice()}; return; }
 
   const [ix, iy] = toImg(px, py);
-  const hit = boxes.findIndex(b => ix >= b[0] - 3 && ix <= b[2] + 3 && iy >= b[1] - 3 && iy <= b[3] + 3);
+  const hit = boxes.findIndex(b =>
+    ix >= b[0] - 3 && ix <= b[2] + 3 && iy >= b[1] - 3 && iy <= b[3] + 3);
   if (hit >= 0) {
-    sel = hit; renderBoxes(); render();
+    sel = hit; classHi = boxes[hit][4];
+    renderBoxes(); renderClassList(); render();
     grab = {mode: 'move', ox: ix, oy: iy, start: boxes[sel].slice()};
     return;
   }
@@ -274,21 +580,24 @@ stage.addEventListener('mousedown', e => {
 stage.addEventListener('mousemove', e => {
   const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
 
-  if (pan) { view.x += px - pan.x; view.y += py - pan.y; pan = {x: px, y: py}; render(); return; }
+  if (pan) {
+    viewport.x += px - pan.x; viewport.y += py - pan.y;
+    pan = {x: px, y: py}; render(); return;
+  }
 
   if (grab) {
     const [ix, iy] = toImg(px, py);
-    const b = boxes[sel], s = grab.start;
+    const s = grab.start;
     if (grab.mode === 'move') {
       const dx = ix - grab.ox, dy = iy - grab.oy;
-      boxes[sel] = [s[0] + dx, s[1] + dy, s[2] + dx, s[3] + dy];
+      boxes[sel] = [s[0] + dx, s[1] + dy, s[2] + dx, s[3] + dy, s[4]];
     } else {
       let [x0, y0, x1, y1] = s;
       if (grab.h.includes('n')) y0 = iy;
       if (grab.h.includes('s')) y1 = iy;
       if (grab.h.includes('w')) x0 = ix;
       if (grab.h.includes('e')) x1 = ix;
-      boxes[sel] = norm([x0, y0, x1, y1]);
+      boxes[sel] = norm([x0, y0, x1, y1, s[4]]);
     }
     dirty = true; renderBoxes(); render();
     return;
@@ -321,18 +630,19 @@ stage.addEventListener('mouseup', async e => {
   if (moved) {
     const [x0, y0] = toImg(Math.min(d.sx, d.cx), Math.min(d.sy, d.cy));
     const [x1, y1] = toImg(Math.max(d.sx, d.cx), Math.max(d.sy, d.cy));
-    boxes.push([x0, y0, x1, y1]); sel = boxes.length - 1; dirty = true;
+    boxes.push([x0, y0, x1, y1, activeClass]);
+    sel = boxes.length - 1; dirty = true;
     renderBoxes(); render();
   } else {
     const [ix, iy] = toImg(d.sx, d.sy);
     busy = true;
     try {
-      const r = await api('/api/snap', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({folder, name: cur, x: ix, y: iy, rad: 70})});
+      const r = await post('/api/snap', {folder, name: cur, x: ix, y: iy, rad: 70});
       if (r.box) {
-        boxes.push(r.box); sel = boxes.length - 1; dirty = true;
-        toast(`Snapped ${Math.round(r.box[2] - r.box[0])}×${Math.round(r.box[3] - r.box[1])} px`, 'ok');
+        boxes.push([r.box[0], r.box[1], r.box[2], r.box[3], activeClass]);
+        sel = boxes.length - 1; dirty = true;
+        toast(`Snapped ${Math.round(r.box[2] - r.box[0])}×${Math.round(r.box[3] - r.box[1])} px`
+              + ` as ${nameOf(activeClass)}`, 'ok');
       } else toast('Nothing found there — drag to draw by hand', 'err');
     } catch (err) { toast('Snap failed: ' + err.message, 'err'); }
     busy = false;
@@ -344,8 +654,8 @@ stage.addEventListener('wheel', e => {
   e.preventDefault();
   const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
   const [ix, iy] = toImg(px, py);
-  view.s = Math.max(0.05, Math.min(80, view.s * (e.deltaY < 0 ? 1.18 : 1 / 1.18)));
-  view.x = px - ix * view.s; view.y = py - iy * view.s;
+  viewport.s = Math.max(0.05, Math.min(80, viewport.s * (e.deltaY < 0 ? 1.18 : 1 / 1.18)));
+  viewport.x = px - ix * viewport.s; viewport.y = py - iy * viewport.s;
   render(); loupe(px, py);
 }, {passive: false});
 
@@ -353,149 +663,183 @@ stage.addEventListener('wheel', e => {
 function renderBoxes() {
   $('#bcount').textContent = boxes.length || '';
   $('#boxes').innerHTML = boxes.length ? boxes.map((b, i) =>
-    `<div class="bx${i === sel ? ' sel' : ''}" data-i="${i}">` +
-    `<span class="sz">${Math.round(b[2] - b[0])}×${Math.round(b[3] - b[1])}</span>` +
-    `<span class="at">(${Math.round((b[0] + b[2]) / 2)}, ${Math.round((b[1] + b[3]) / 2)})</span>` +
-    `<button class="x" data-d="${i}" title="Remove">×</button></div>`).join('')
-    : '<div class="empty">None. Click the drone to snap a box, or drag one.</div>';
-  $('#boxes').querySelectorAll('.bx').forEach(el => el.onclick = ev => {
-    const d = ev.target.dataset.d;
-    if (d !== undefined) {
-      boxes.splice(+d, 1); sel = -1; dirty = true; renderBoxes(); render();
-      return;
-    }
-    sel = +el.dataset.i; renderBoxes(); render();
+    `<div class="bx${i === sel ? ' sel' : ''}" data-i="${i}" style="--c:${colorOf(b[4])}">
+       <i></i>
+       <span class="bn">${esc(nameOf(b[4]))}</span>
+       <span class="sz">${Math.round(b[2] - b[0])}×${Math.round(b[3] - b[1])}</span>
+       <button class="x" title="Remove">×</button>
+     </div>`).join('')
+    : '<div class="empty">No boxes. Click the target, or drag to draw one.</div>';
+  $('#boxes').querySelectorAll('.bx').forEach(el => {
+    const i = +el.dataset.i;
+    el.onclick = () => { sel = i; classHi = boxes[i][4]; renderBoxes(); renderClassList(); render(); };
+    el.querySelector('.x').onclick = e => {
+      e.stopPropagation();
+      boxes.splice(i, 1); sel = -1; dirty = true; renderBoxes(); render();
+    };
   });
 }
 
 function renderCands() {
   $('#cands').innerHTML = cands.length ? cands.map((c, i) =>
-    `<div class="cd" data-i="${i}"><span class="tag ${c.src}">${c.src}</span>` +
-    `${Math.round(c.box[2] - c.box[0])}×${Math.round(c.box[3] - c.box[1])} ` +
-    `<span class="at">(${Math.round((c.box[0] + c.box[2]) / 2)}, ` +
-    `${Math.round((c.box[1] + c.box[3]) / 2)})</span></div>`).join('')
-    : '<div class="empty">Press <b>A</b> to run the detectors.</div>';
+    `<div class="cd${i === candHi ? ' hi' : ''}" data-i="${i}">
+       <span class="tag ${c.src}">${c.src}</span>
+       <span>${Math.round(c.box[2] - c.box[0])}×${Math.round(c.box[3] - c.box[1])}</span>
+       <span class="at">${c.score}</span>
+     </div>`).join('')
+    : '<div class="empty">Nothing proposed on this frame.</div>';
   $('#cands').querySelectorAll('.cd').forEach(el => {
-    el.onmouseenter = () => { candHi = +el.dataset.i; render(); };
-    el.onmouseleave = () => { candHi = -1; render(); };
+    const i = +el.dataset.i;
+    el.onmouseenter = () => { candHi = i; render(); };
     el.onclick = () => {
-      const c = cands[+el.dataset.i];
-      boxes.push(c.box.slice()); sel = boxes.length - 1; dirty = true;
-      renderBoxes(); render(); toast('Candidate accepted', 'ok');
+      const b = cands[i].box;
+      boxes.push([b[0], b[1], b[2], b[3], activeClass]);
+      sel = boxes.length - 1; dirty = true;
+      renderBoxes(); render();
+      toast(`Accepted as ${nameOf(activeClass)}`, 'ok');
     };
   });
 }
 
-/* ---------------------------------------------------------------- actions */
 async function save(quiet) {
   if (!cur) return;
+  const payload = boxes.map(b => ({x0: b[0], y0: b[1], x1: b[2], y1: b[3], cls: b[4]}));
   try {
-    const r = await api('/api/label', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({folder, name: cur, boxes})});
-    const f = frames.find(x => x.name === cur);
-    if (f) { f.boxes = r.boxes; f.has_label = true; }
+    const r = await post('/api/label', {folder, name: cur, boxes: payload});
     dirty = false;
-    renderFrames();
-    if (!quiet) toast(r.boxes ? `Saved ${r.boxes} box${r.boxes > 1 ? 'es' : ''}` : 'Saved as no-drone', 'ok');
+    const f = frames.find(x => x.name === cur);
+    if (f) {
+      f.boxes = r.boxes;
+      f.status = r.boxes ? 'annotated' : 'null';
+      f.classes = Array.from(new Set(boxes.map(b => b[4]))).sort((a, b) => a - b);
+      renderFrameList();
+    }
+    if (!quiet) toast(r.boxes ? `Saved ${r.boxes} box(es)` : 'Saved as null', 'ok');
   } catch (e) { toast('Save failed: ' + e.message, 'err'); }
 }
 
 async function runAI() {
-  if (!cur || busy) return;
-  busy = true; toast('Running detectors…');
+  if (!cur) return;
+  toast('Running the detectors…');
   try {
-    const r = await api('/api/ai', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({folder, name: cur})});
-    cands = r.candidates; renderCands(); render();
+    const r = await post('/api/ai', {folder, name: cur});
+    cands = r.candidates; candHi = -1;
+    renderCands(); render();
     (r.notes || []).forEach(n => toast(n, 'err'));
-    toast(`${cands.length} candidate${cands.length === 1 ? '' : 's'}`, cands.length ? 'ok' : 'err');
-  } catch (e) { toast('Detectors failed: ' + e.message, 'err'); }
-  busy = false;
+    if (!cands.length) toast('Nothing proposed on this frame', 'err');
+  } catch (e) { toast('AI assist failed: ' + e.message, 'err'); }
 }
 
+/* ---------------------------------------------------------------- buttons */
+$('#back').onclick = async () => {
+  if (dirty) await save(true);
+  await refreshFolderCounts();
+  await loadFrames();
+  setView('gallery');
+};
 $('#prev').onclick = () => step(-1);
 $('#next').onclick = () => step(1);
-$('#save').onclick = () => save(false);
+$('#fit').onclick = () => { fitView(); render(); };
+$('#save').onclick = () => save();
 $('#ai').onclick = runAI;
-$('#fit').onclick = () => { fit(); render(); };
-
-$('#blank').onclick = async () => {
-  if (!cur) return;
-  boxes = []; sel = -1; dirty = true; renderBoxes(); render();
-  await save(true);
-  toast('Marked as no drone — empty label written', 'ok');
-};
-
 $('#enh').onclick = () => {
   enhance = !enhance;
   $('#enh').classList.toggle('on', enhance);
-  if (!cur) return;
-  const keep = {...view};
   img = new Image();
-  img.onload = () => { view = keep; render(); };
+  img.onload = render;
   img.src = imgUrl(cur);
 };
-
-$('#del').onclick = async () => {
-  if (!cur) return;
+$('#blank').onclick = async () => { boxes = []; sel = -1; dirty = true; renderBoxes(); render(); await save(); };
+$('#reject').onclick = async () => {
+  const on = $('#reject').classList.contains('on');
+  await post('/api/status', {folder, names: [cur], status: on ? 'unrejected' : 'rejected'});
+  $('#reject').classList.toggle('on', !on);
   const f = frames.find(x => x.name === cur);
+  if (f) { f.status = on ? (f.boxes ? 'annotated' : 'unassigned') : 'rejected'; renderFrameList(); }
+  toast(on ? 'Un-rejected' : 'Rejected', 'ok');
+};
+$('#del').onclick = async () => {
   const ok = await confirmDialog({
     title: 'Delete this frame?',
-    body: `<b>${cur}</b><p>This removes the frame and everything derived from it:</p>` +
-          `<ul><li>images/ — the original frame</li><li>labels/ — its label file</li>` +
-          `<li>annotated/ — the boxed copy</li><li>crops/ — the review crop</li>` +
-          `<li>REVIEW.csv — its row</li></ul>` +
-          `<div class="warn">This cannot be undone from here. The frame can only come back ` +
-          `from the source folder it was cropped from.</div>`,
-    okLabel: 'Delete frame'});
+    body: `<p>Removes from disk:</p><ul><li><b>${esc(cur)}</b></li></ul>
+           <div class="warn">This cannot be undone.</div>`});
   if (!ok) return;
-  try {
-    const list = view_list();
-    const i = list.findIndex(x => x.name === cur);
-    const nextName = (list[i + 1] || list[i - 1] || {}).name;
-    await api('/api/delete', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({folder, name: cur})});
-    frames = frames.filter(x => x.name !== cur);
-    dirty = false;
-    toast('Frame deleted', 'ok');
-    if (nextName) open(nextName, true); else { cur = null; renderFrames(); }
-  } catch (e) { toast('Delete failed: ' + e.message, 'err'); }
+  const i = frames.findIndex(f => f.name === cur);
+  await post('/api/delete', {folder, names: [cur]});
+  frames.splice(i, 1);
+  toast('Frame deleted', 'ok');
+  await refreshFolderCounts();
+  if (!frames.length) { setView('gallery'); loadFrames(); return; }
+  openFrame(frames[Math.min(i, frames.length - 1)].name, true);
 };
 
-$('#filters').querySelectorAll('button').forEach(b => b.onclick = () => {
-  filter = b.dataset.f;
-  $('#filters').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-  renderFrames();
-  const list = view_list();
-  if (list.length && !list.some(f => f.name === cur)) open(list[0].name);
-});
-
 /* ---------------------------------------------------------------- keys */
-addEventListener('keydown', e => {
-  if ($('#veil').classList.contains('on')) return;
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  if (e.code === 'Space') { space = true; stage.style.cursor = 'grab'; e.preventDefault(); return; }
-  if (e.ctrlKey || e.metaKey) return;
-  const k = e.key.toLowerCase();
-  if (e.key === 'ArrowRight' || k === 'd') { e.preventDefault(); step(1); }
-  else if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
-  else if (k === 's') { e.preventDefault(); save(false); }
-  else if (k === 'b') $('#blank').click();
-  else if (k === 'a') runAI();
-  else if (k === 'e') $('#enh').click();
-  else if (k === 'f') { fit(); render(); }
-  else if (e.key === 'Escape') { sel = -1; renderBoxes(); render(); }
-  else if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (sel >= 0) { boxes.splice(sel, 1); sel = -1; dirty = true; renderBoxes(); render(); }
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' ||
+      e.target.tagName === 'SELECT') return;
+  if (document.body.dataset.view !== 'annotate') {
+    if (e.key === 'Escape') setView('gallery');
+    return;
+  }
+  if (e.code === 'Space') { space = true; e.preventDefault(); return; }
+  const k = e.key;
+
+  if (k === 'ArrowRight' || k === 'd' || k === 'D') { step(1); return; }
+  if (k === 'ArrowLeft') { step(-1); return; }
+  if (k === 'ArrowUp' || k === 'ArrowDown') {
+    e.preventDefault();
+    const d = k === 'ArrowDown' ? 1 : -1;
+    setActiveClass((activeClass + d + classes.length) % classes.length);
+    return;
+  }
+  if (k >= '2' && k <= '9') {                    // 2..9 pick a class directly
+    const i = +k - 2;
+    if (i < classes.length) setActiveClass(i);
+    return;
+  }
+  if (k === '0') { fitView(); render(); return; }
+  if (k === '1') {
+    const [W, H] = stageSize();
+    const cx = iw / 2, cy = ih / 2;
+    viewport.s = 1; viewport.x = W / 2 - cx; viewport.y = H / 2 - cy;
+    render(); return;
+  }
+  if (k === 's' || k === 'S') { save(); return; }
+  if (k === 'n' || k === 'N') { $('#blank').click(); return; }
+  if (k === 'r' || k === 'R') { $('#reject').click(); return; }
+  if (k === 'a' || k === 'A') { runAI(); return; }
+  if (k === 'e' || k === 'E') { $('#enh').click(); return; }
+  if (k === 'f' || k === 'F') { fitView(); render(); return; }
+  if (k === 'Escape') { sel = -1; cands = []; renderBoxes(); renderCands(); render(); return; }
+  if ((k === 'Delete' || k === 'Backspace') && sel >= 0) {
+    e.preventDefault();
+    boxes.splice(sel, 1); sel = -1; dirty = true; renderBoxes(); render();
   }
 });
-addEventListener('keyup', e => {
+document.addEventListener('keyup', e => {
   if (e.code === 'Space') { space = false; stage.style.cursor = 'crosshair'; }
 });
-addEventListener('resize', () => render());
-addEventListener('beforeunload', e => { if (dirty) { save(true); } });
+window.addEventListener('resize', () => {
+  if (document.body.dataset.view === 'annotate') { render(); }
+});
+window.addEventListener('beforeunload', e => {
+  if (dirty) { e.preventDefault(); e.returnValue = ''; }
+});
 
-loadFolders().then(() => toast('Pick a folder to begin'));
+/* ---------------------------------------------------------------- boot */
+(async () => {
+  const s = await api('/api/state');
+  base = s.base; root = s.root;
+  $('#modelbadge').textContent = s.model ? 'model loaded' : 'imaging only';
+  $('#modelbadge').classList.toggle('ok', s.model);
+  if (root) {
+    $('#rootpath').textContent = root;
+    folders = await api('/api/folders');
+    await loadClasses();
+    renderFolders();
+    if (folders.length) await selectFolder(folders[0].name);
+    else { toast('No images under that folder — pick another', 'err'); openBrowse(root); }
+  } else {
+    openBrowse(base);
+  }
+})();
