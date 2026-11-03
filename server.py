@@ -78,9 +78,13 @@ FIELDS = ["image", "labelled", "score", "box_w_px", "found_by", "note"]
 SIDE = ".labeller"                # per-folder state the tool owns; never training data
 THUMB_CACHE = Path.home() / ".cache" / "drone-labeler" / "thumbs"
 
-DEFAULT_CLASSES = ["object"]      # only used when the folder names none of its own
-PALETTE = ["#efa83e", "#52c08a", "#5aa9e6", "#b87ddb", "#e0776a", "#d9c04a", "#7fd1c4",
-           "#e07ab0", "#8fa6c4", "#c4a77f"]
+# No default class. A made-up "object" gets saved into real label files by whoever does not
+# notice it, and a class list is the one thing the tool must not invent on someone's behalf.
+# What it does instead is REMEMBER: the last list used is kept here and offered to the next
+# folder that names none of its own, so a list is created once and carries across folders.
+REMEMBERED = Path.home() / ".config" / "drone-labeler" / "classes.txt"
+PALETTE = ["#f5c518", "#2fb673", "#3c90e0", "#9b5fd0", "#e0614f", "#17a8a0", "#e0699f",
+           "#6b7fa8", "#c08a3e", "#7cb342"]
 
 
 # ---------------------------------------------------------------- paths
@@ -302,7 +306,11 @@ def discover_classes(root: Path):
         if here.parent == here:
             break
         here = here.parent
-    return list(DEFAULT_CLASSES), None
+    if REMEMBERED.exists():
+        names = [ln.strip() for ln in REMEMBERED.read_text().splitlines() if ln.strip()]
+        if names:
+            return names, "remembered"
+    return [], None
 
 
 def read_classes() -> list:
@@ -703,6 +711,11 @@ def set_classes(req: ClassReq):
         raise HTTPException(400, "need at least one class")
 
     before = read_classes()
+    try:                                          # carry this list to the next folder
+        REMEMBERED.parent.mkdir(parents=True, exist_ok=True)
+        REMEMBERED.write_text("".join(n + "\n" for n in names))
+    except OSError:
+        pass
     remap = {}                                   # old index -> new index, absent = deleted
     for new_i, old_i in enumerate(ids):
         if old_i is not None and 0 <= old_i < len(before):

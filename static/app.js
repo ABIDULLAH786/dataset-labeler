@@ -38,8 +38,8 @@ const HS = 7;                                   // handle hit size, screen px
 const STATUSES = [['all', 'All'], ['unassigned', 'Unassigned'], ['annotated', 'Annotated'],
                   ['null', 'Null'], ['rejected', 'Rejected']];
 // must match PALETTE in server.py, so a class is the same colour on a card and on the canvas
-const PALETTE = ['#efa83e', '#52c08a', '#5aa9e6', '#b87ddb', '#e0776a', '#d9c04a', '#7fd1c4',
-                 '#e07ab0', '#8fa6c4', '#c4a77f'];
+const PALETTE = ['#f5c518', '#2fb673', '#3c90e0', '#9b5fd0', '#e0614f', '#17a8a0', '#e0699f',
+                 '#6b7fa8', '#c08a3e', '#7cb342'];
 
 /* ---------------------------------------------------------------- plumbing */
 function toast(msg, kind) {
@@ -192,6 +192,16 @@ async function loadClasses() {
 }
 
 function renderClassBar() {
+  if (!classes.length) {
+    $('#classbar').innerHTML =
+      `<button class="chip need" id="firstclass">No classes yet - create one</button>`;
+    $('#firstclass').onclick = () => {
+      setView(document.body.dataset.view);
+      $('#classfilter') && $('#classfilter').focus();
+      $('#editclasses').click();
+    };
+    return;
+  }
   $('#classbar').innerHTML = classes.slice(0, 8).map(c =>
     `<button class="chip${c.id === activeClass ? ' on' : ''}" data-c="${c.id}"
        style="--c:${c.color}" title="${esc(c.name)} — class ${c.id}">
@@ -216,6 +226,8 @@ function renderClassList() {
   let html = hits.map(mk).join('');
   if (q && !classes.some(c => c.name.toLowerCase() === q))
     html += `<div class="cl create" data-new="1">+ create class “${esc($('#classfilter').value)}”</div>`;
+  if (!classes.length && !q)
+    html = '<div class="empty">No classes yet. Type a name above and press Enter.</div>';
   $('#classlist').innerHTML = html || '<div class="empty">No class matches.</div>';
   $('#classlist').querySelectorAll('.cl').forEach(el => el.onclick = () => {
     if (el.dataset.new) addClass($('#classfilter').value);
@@ -226,12 +238,22 @@ function renderClassList() {
 async function addClass(name) {
   name = (name || '').trim();
   if (!name) return;
-  const names = classes.map(c => c.name).concat([name]);
-  const r = await post('/api/classes', {classes: names});
-  classes = r.classes;
-  $('#classfilter').value = '';
-  setActiveClass(classes.length - 1);
-  toast(`Class “${name}” added as index ${classes.length - 1}`, 'ok');
+  if (classes.some(c => c.name.toLowerCase() === name.toLowerCase())) {
+    toast(`“${name}” already exists`, 'err');
+    return;
+  }
+  // The endpoint takes {id, name}: the id is the index the class HELD BEFORE, and null means
+  // new. Sending bare strings, as this used to, is rejected outright - which is why clicking
+  // "create class" appeared to do nothing at all.
+  const payload = classes.map(c => ({id: c.id, name: c.name})).concat([{id: null, name}]);
+  try {
+    const r = await post('/api/classes', {classes: payload, apply_to_labels: false});
+    classes = r.classes;
+    $('#classfilter').value = '';
+    setActiveClass(classes.length - 1);
+    renderClassBar();
+    toast(`Class “${name}” created as index ${classes.length - 1}`, 'ok');
+  } catch (e) { toast('Could not create the class: ' + e.message, 'err'); }
 }
 
 $('#classfilter').addEventListener('input', renderClassList);
@@ -319,7 +341,8 @@ $('#clscancel').onclick = () => $('#clsveil').classList.remove('on');
 
 $('#editclasses').onclick = async () => {
   if (!root) { toast('Pick a folder first', 'err'); return; }
-  draft = classes.map(c => ({id: c.id, name: c.name}));
+  draft = classes.length ? classes.map(c => ({id: c.id, name: c.name}))
+                         : [{id: null, name: ''}];
   usage = {};
   $('#clsveil').classList.add('on');
   renderDraft();
@@ -716,6 +739,11 @@ const stage = $('#stage');
 
 stage.addEventListener('mousedown', e => {
   if (busy) return;
+  if (!classes.length) {
+    toast('Create a class first - every box has to say what it is', 'err');
+    $('#classfilter').focus();
+    return;
+  }
   const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
   if (e.button === 1 || space) { pan = {x: px, y: py}; e.preventDefault(); return; }
   if (e.button !== 0) return;
