@@ -22,8 +22,8 @@ region averages 52 out of 255 and nothing is visible in the raw image. Pressing 
 frame through CLAHE and it appears. The enhancement is **for looking only** — the image on disk
 is never modified.
 
-**Snap.** Clicking near the target turns the click into a box that hugs whatever is actually
-there. Labels stay tight instead of carrying a lot of empty space, which matters when the target
+**Snap.** Double-clicking near the target turns the click into a box that hugs whatever is
+actually there. Labels stay tight instead of carrying a lot of empty space, which matters when the target
 is 10 px wide and the box is 40.
 
 **Assisted candidates, not an oracle.** `A` runs a detection model, frame differencing and a
@@ -173,8 +173,8 @@ Select cards with their checkboxes for the batch bar: mark null, reject, un-reje
 
 | | |
 |---|---|
-| **click** | snap a box onto whatever is under the cursor, in the active class |
-| **drag** | draw a box by hand |
+| **drag** | draw a box by hand, in the active class |
+| **double-click** | snap a box onto whatever is under the cursor |
 | **click a box** | select it — then drag to move, or pull a handle to resize |
 | **wheel** | zoom at the cursor |
 | **space-drag**, middle-drag | pan |
@@ -183,8 +183,11 @@ Select cards with their checkboxes for the batch bar: mark null, reject, un-reje
 ### Keys
 
 `→` / `D` next · `←` prev · `↑` `↓` cycle class · `2`…`9` pick a class · `S` save · `N` mark
-null · `R` reject · `A` assisted candidates · `E` contrast · `0` fit · `1` 100% · `Del` remove
-selected box · `Esc` deselect
+null · `R` reject · `A` assisted candidates · `E` contrast · `0` fit · `1` 100% · `Ctrl+Z` undo ·
+`Ctrl+Shift+Z` redo · `Del` remove selected box · `Esc` deselect · `?` this list
+
+A box is only created once the pointer has been dragged a few pixels. A bare click does
+nothing, so a stray click on the picture cannot leave a label behind.
 
 ### Two behaviours to know
 

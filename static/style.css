@@ -24,7 +24,10 @@ button,input,select,textarea{font:inherit;color:inherit}
 
 /* icons: one stroke weight everywhere, sized to the text they sit beside */
 .ic{width:15px;height:15px;flex:none;fill:none;stroke:currentColor;stroke-width:2;
-  stroke-linecap:round;stroke-linejoin:round;vertical-align:-2px}
+  stroke-linecap:round;stroke-linejoin:round;vertical-align:-2px;
+  /* an icon is never the thing you clicked: without this the <use> node becomes the event
+     target, which hides the button from hit-testing and from e.target checks */
+  pointer-events:none}
 .ic.dimic{color:var(--dim);width:13px;height:13px}
 .btn{display:inline-flex;align-items:center;gap:6px}
 #viewbar .ic{width:16px;height:16px}

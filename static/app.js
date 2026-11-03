@@ -35,6 +35,7 @@ let past = [], future = [];
 
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const HS = 7;                                   // handle hit size, screen px
+const DRAG_MIN = 5;                             // px of drag before a box is created at all
 const STATUSES = [['all', 'All'], ['unassigned', 'Unassigned'], ['annotated', 'Annotated'],
                   ['null', 'Null'], ['rejected', 'Rejected']];
 // must match PALETTE in server.py, so a class is the same colour on a card and on the canvas
@@ -737,8 +738,13 @@ function loupe(px, py) {
 /* ---------------------------------------------------------------- mouse */
 const stage = $('#stage');
 
+// The view bar and the loupe live inside #stage so they float over the picture. That also
+// means their clicks arrive at the drawing handler, which is why pressing Contrast left a
+// small box behind every time. Anything that starts on a control is not a drawing gesture.
+const onChrome = e => !!(e.target.closest && e.target.closest('#viewbar'));
+
 stage.addEventListener('mousedown', e => {
-  if (busy) return;
+  if (busy || onChrome(e)) return;
   if (!classes.length) {
     toast('Create a class first - every box has to say what it is', 'err');
     $('#classfilter').focus();
@@ -766,6 +772,7 @@ stage.addEventListener('mousedown', e => {
 });
 
 stage.addEventListener('mousemove', e => {
+  if (onChrome(e) && !draw_ && !grab && !pan) { $('#loupe').style.display = 'none'; return; }
   const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
 
   if (pan) {
@@ -814,7 +821,9 @@ stage.addEventListener('mouseup', async e => {
   if (!draw_) return;
 
   const d = draw_; draw_ = null;
-  const moved = Math.abs(d.cx - d.sx) > 4 || Math.abs(d.cy - d.sy) > 4;
+  // A box only exists once the pointer has actually been dragged. Creating one on a bare
+  // click meant every stray click on the picture left a label behind.
+  const moved = Math.abs(d.cx - d.sx) > DRAG_MIN || Math.abs(d.cy - d.sy) > DRAG_MIN;
   if (moved) {
     const [x0, y0] = toImg(Math.min(d.sx, d.cx), Math.min(d.sy, d.cy));
     const [x1, y1] = toImg(Math.max(d.sx, d.cx), Math.max(d.sy, d.cy));
@@ -823,21 +832,29 @@ stage.addEventListener('mouseup', async e => {
     sel = boxes.length - 1; dirty = true;
     renderBoxes(); render();
   } else {
-    const [ix, iy] = toImg(d.sx, d.sy);
-    busy = true;
-    try {
-      const r = await post('/api/snap', {folder, name: cur, x: ix, y: iy, rad: 70});
-      if (r.box) {
-        remember();
-        boxes.push([r.box[0], r.box[1], r.box[2], r.box[3], activeClass]);
-        sel = boxes.length - 1; dirty = true;
-        toast(`Snapped ${Math.round(r.box[2] - r.box[0])}×${Math.round(r.box[3] - r.box[1])} px`
-              + ` as ${nameOf(activeClass)}`, 'ok');
-      } else toast('Nothing found there — drag to draw by hand', 'err');
-    } catch (err) { toast('Snap failed: ' + err.message, 'err'); }
-    busy = false;
-    renderBoxes(); render();
+    render();                       // just a click: clear the rubber band, leave nothing behind
   }
+});
+
+/* Snap kept its reason to exist - a 10 px target is far easier to click than to drag a tight
+ * box around - but it answers to a double-click now, so an ordinary click cannot create one. */
+stage.addEventListener('dblclick', async e => {
+  if (busy || onChrome(e) || !classes.length) return;
+  const r = cv.getBoundingClientRect();
+  const [ix, iy] = toImg(e.clientX - r.left, e.clientY - r.top);
+  busy = true;
+  try {
+    const res = await post('/api/snap', {folder, name: cur, x: ix, y: iy, rad: 70});
+    if (res.box) {
+      remember();
+      boxes.push([res.box[0], res.box[1], res.box[2], res.box[3], activeClass]);
+      sel = boxes.length - 1; dirty = true;
+      toast(`Snapped ${Math.round(res.box[2] - res.box[0])}×${Math.round(res.box[3] - res.box[1])}`
+            + ` px as ${nameOf(activeClass)}`, 'ok');
+    } else toast('Nothing found there - drag to draw by hand', 'err');
+  } catch (err) { toast('Snap failed: ' + err.message, 'err'); }
+  busy = false;
+  renderBoxes(); render();
 });
 
 stage.addEventListener('wheel', e => {
