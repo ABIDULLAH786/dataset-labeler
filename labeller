@@ -8,32 +8,60 @@
 #
 # Anything else is passed straight through to server.py. The folder given here is only the
 # starting point: Browse... inside the tool reaches anywhere on the machine.
-set -euo pipefail
+set -uo pipefail
 
 REPO="/home/khive/Khive/PROJECTS/drone-labeler"
 MODEL="/home/khive/Downloads/ai model/v16-day-vision-training-on-v15/drone_camera_model_v16-day-vision-on-v15.pt"
 
 target=""
 use_model=1
+want_port=""
 pass=()
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --no-model) use_model=0 ;;
-    -*)         pass+=("$arg") ;;
-    *)          if [[ -z "$target" && -d "$arg" ]]; then target="$arg"; else pass+=("$arg"); fi ;;
+    --port)     want_port="${2:-}"; shift ;;
+    --port=*)   want_port="${1#*=}" ;;
+    -*)         pass+=("$1") ;;
+    *)          if [[ -z "$target" && -d "$1" ]]; then target="$1"; else pass+=("$1"); fi ;;
   esac
+  shift
 done
 [[ -z "$target" ]] && target="$PWD"
-target="$(cd "$target" && pwd)"            # absolute, so the server is not tied to this shell
+if ! target="$(cd "$target" 2>/dev/null && pwd)"; then
+  echo "labeller: cannot enter that folder" >&2; exit 1
+fi
 
-# Take the first free port from 8077 up. Two folders can then be open side by side, and a
-# leftover server from a previous session does not block this one with an opaque bind error.
-port=""
-for p in $(seq 8077 8097); do
-  if ! (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then port=$p; break; fi
-  exec 3<&- 3>&- 2>/dev/null || true
-done
-if [[ -z "$port" ]]; then echo "no free port between 8077 and 8097" >&2; exit 1; fi
+[[ -d "$REPO" ]] || { echo "labeller: no repo at $REPO - edit REPO in $0" >&2; exit 1; }
+
+# Ask whether the port can be BOUND, not whether something answers on it. A connect test says
+# nothing about a port held by a socket in TIME_WAIT or bound on another interface, and those
+# are exactly the cases where the server then dies on startup with the terminal already gone.
+free_port() {
+  python3 - "$@" <<'PY'
+import socket, sys
+want = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else ""
+candidates = [int(want)] if want else range(8077, 8098)
+for p in candidates:
+    s = socket.socket()
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", p))
+        print(p)
+        sys.exit(0)
+    except OSError:
+        continue
+    finally:
+        s.close()
+sys.exit(1)
+PY
+}
+
+if ! port="$(free_port "$want_port")"; then
+  if [[ -n "$want_port" ]]; then echo "labeller: port $want_port is in use" >&2
+  else echo "labeller: no free port between 8077 and 8097" >&2; fi
+  exit 1
+fi
 
 args=(--root "$target" --port "$port")
 if [[ $use_model -eq 1 && -f "$MODEL" ]]; then args+=(--model "$MODEL"); fi
@@ -42,10 +70,32 @@ args+=("${pass[@]+"${pass[@]}"}")
 url="http://127.0.0.1:$port"
 echo "folder  $target"
 echo "open    $url"
+echo
 
-# Give uvicorn a moment to bind before handing the URL to the browser, or the first load races
-# the server and shows a connection error the person then has to reload past.
-if command -v xdg-open >/dev/null; then (sleep 2; xdg-open "$url" >/dev/null 2>&1 || true) & fi
+# Wait for the server to actually answer before handing the URL to the browser. A fixed sleep
+# loses the race on a cold start - importing cv2 and FastAPI takes longer than a couple of
+# seconds - and the browser then shows ERR_CONNECTION_REFUSED on a server that is about to be
+# perfectly fine.
+if command -v xdg-open >/dev/null; then
+(
+  for _ in $(seq 1 120); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+      xdg-open "$url" >/dev/null 2>&1 || true
+      exit 0
+    fi
+    sleep 0.5
+  done
+) &
+fi
 
+# -u so the server's own banner appears as it starts rather than sitting in a buffer, and no
+# exec so a failure to start can be reported instead of just returning to the prompt.
 cd "$REPO"
-exec python3 -I server.py "${args[@]}"
+python3 -I -u server.py "${args[@]}"
+code=$?
+if [[ $code -ne 0 ]]; then
+  echo >&2
+  echo "labeller: the server exited with status $code" >&2
+  echo "          try:  cd '$REPO' && python3 -I server.py --root '$target'" >&2
+fi
+exit $code
