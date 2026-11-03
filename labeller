@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# labeller - open the Drone Labeller on a folder, from anywhere.
+#
+#   labeller                     label the current directory
+#   labeller path/to/frames      label that directory
+#   labeller . --no-model        skip the detection model (starts faster)
+#   labeller --port 9000         use a specific port
+#
+# Anything else is passed straight through to server.py. The folder given here is only the
+# starting point: Browse... inside the tool reaches anywhere on the machine.
+set -euo pipefail
+
+REPO="/home/khive/Khive/PROJECTS/drone-labeler"
+MODEL="/home/khive/Downloads/ai model/v16-day-vision-training-on-v15/drone_camera_model_v16-day-vision-on-v15.pt"
+
+target=""
+use_model=1
+pass=()
+for arg in "$@"; do
+  case "$arg" in
+    --no-model) use_model=0 ;;
+    -*)         pass+=("$arg") ;;
+    *)          if [[ -z "$target" && -d "$arg" ]]; then target="$arg"; else pass+=("$arg"); fi ;;
+  esac
+done
+[[ -z "$target" ]] && target="$PWD"
+target="$(cd "$target" && pwd)"            # absolute, so the server is not tied to this shell
+
+# Take the first free port from 8077 up. Two folders can then be open side by side, and a
+# leftover server from a previous session does not block this one with an opaque bind error.
+port=""
+for p in $(seq 8077 8097); do
+  if ! (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then port=$p; break; fi
+  exec 3<&- 3>&- 2>/dev/null || true
+done
+if [[ -z "$port" ]]; then echo "no free port between 8077 and 8097" >&2; exit 1; fi
+
+args=(--root "$target" --port "$port")
+if [[ $use_model -eq 1 && -f "$MODEL" ]]; then args+=(--model "$MODEL"); fi
+args+=("${pass[@]+"${pass[@]}"}")
+
+url="http://127.0.0.1:$port"
+echo "folder  $target"
+echo "open    $url"
+
+# Give uvicorn a moment to bind before handing the URL to the browser, or the first load races
+# the server and shows a connection error the person then has to reload past.
+if command -v xdg-open >/dev/null; then (sleep 2; xdg-open "$url" >/dev/null 2>&1 || true) & fi
+
+cd "$REPO"
+exec python3 -I server.py "${args[@]}"

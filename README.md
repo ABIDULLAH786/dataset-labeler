@@ -41,11 +41,34 @@ pip install ultralytics
 
 ## Run
 
+Put the launcher on your PATH once:
+
+```bash
+ln -s "$PWD/labeller" ~/.local/bin/labeller
+```
+
+Then, from anywhere:
+
+```bash
+cd /some/folder/of/frames && labeller      # label the folder you are standing in
+labeller path/to/frames                    # label that one
+labeller . --no-model                      # skip the detection model, starts faster
+labeller --port 9000                       # pin a port
+```
+
+It opens your browser, loads the detection model if it is where the script expects, and takes
+the first free port from 8077 up — so two folders can be open side by side, and a server left
+running from earlier does not block a new one. The folder you give it is only a starting point:
+**Browse…** inside the tool reaches anywhere on the machine.
+
+Or run the server directly:
+
 ```bash
 python3 server.py                                   # browse from your home directory
 python3 server.py --root /path/to/folder            # open with that folder selected
-python3 server.py --base /mnt/data --port 8001      # browse anywhere under /mnt/data
+python3 server.py --base /mnt/data --port 8001      # start the browser under /mnt/data
 python3 server.py --root ... --model weights.pt     # enable assisted candidates
+python3 server.py --root ... --lock-base            # refuse to open anything outside --base
 ```
 
 Then open `http://127.0.0.1:8000`.
