@@ -27,6 +27,11 @@ let viewport = {x: 0, y: 0, s: 1};
 let boxes = [], sel = -1, cands = [], candHi = -1;
 let draw_ = null, pan = null, grab = null, space = false;
 let enhance = false, dirty = false, busy = false;
+let gridMode = localStorage.getItem('dl-view') || 'grid';
+let bright = 0;
+// Undo stack of whole box-lists. A frame holds a handful of boxes, so snapshotting the lot is
+// simpler and less error-prone than recording deltas, and the memory is nothing.
+let past = [], future = [];
 
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const HS = 7;                                   // handle hit size, screen px
@@ -198,7 +203,9 @@ function renderClassBar() {
 function setActiveClass(id) {
   activeClass = id; classHi = id;
   renderClassBar(); renderClassList();
-  if (sel >= 0) { boxes[sel][4] = id; dirty = true; renderBoxes(); render(); }
+  if (sel >= 0 && boxes[sel][4] !== id) {
+    remember(); boxes[sel][4] = id; dirty = true; renderBoxes(); render();
+  }
 }
 
 function renderClassList() {
@@ -373,6 +380,9 @@ async function loadFrames() {
                       `&page=${page}&per=${per}&q=${encodeURIComponent(query)}`);
   frames = r.items; counts = r.counts; pages = r.pages; page = r.page;
   renderTabs(); renderGrid(); renderPager(); renderBatch();
+  // the next page's pictures are fetched while this one is being looked at, so paging forward
+  // lands on images the browser already has
+  clearTimeout(window._pf); window._pf = setTimeout(prefetchNextPage, 900);
 }
 
 function renderTabs() {
@@ -384,8 +394,9 @@ function renderTabs() {
   });
 }
 
-function thumbUrl(name) {
-  return `/api/thumb?folder=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}&w=320`;
+function thumbUrl(name, w) {
+  return `/api/thumb?folder=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}` +
+         `&w=${w || (gridMode === 'list' ? 200 : 320)}`;
 }
 
 function classChips(ids) {
@@ -397,6 +408,7 @@ function classChips(ids) {
 }
 
 function renderGrid() {
+  $('#grid').className = gridMode;
   if (!frames.length) {
     $('#grid').innerHTML = `<div class="empty big">Nothing in this tab.</div>`;
     return;
@@ -404,7 +416,7 @@ function renderGrid() {
   $('#grid').innerHTML = frames.map(f => `
     <div class="card${selected.has(f.name) ? ' sel' : ''}" data-n="${esc(f.name)}">
       <div class="cbox"><input type="checkbox" ${selected.has(f.name) ? 'checked' : ''}></div>
-      <div class="ci"><img loading="lazy" src="${thumbUrl(f.name)}" alt=""></div>
+      <div class="ci"><img loading="lazy" decoding="async" src="${thumbUrl(f.name)}" alt=""></div>
       <div class="cm">
         <span class="dot ${f.status}" title="${f.status}"></span>
         <span class="cn" title="${esc(f.name)}">${esc(f.name)}</span>
@@ -450,6 +462,12 @@ function renderBatch() {
   const n = selected.size;
   $('#batchbar').classList.toggle('hidden', !n);
   $('#nsel').textContent = n;
+  const onPage = frames.filter(f => selected.has(f.name)).length;
+  const box = $('#selall');
+  box.checked = frames.length > 0 && onPage === frames.length;
+  box.indeterminate = onPage > 0 && onPage < frames.length;
+  $('#selall-label').textContent =
+    onPage && onPage === frames.length ? 'Clear page' : `Select page (${frames.length})`;
 }
 
 $('#search').addEventListener('input', () => {
@@ -457,11 +475,25 @@ $('#search').addEventListener('input', () => {
   clearTimeout(window._q); window._q = setTimeout(loadFrames, 220);
 });
 $('#per').onchange = () => { per = +$('#per').value; page = 1; loadFrames(); };
-$('#selall').onclick = () => {
-  frames.forEach(f => selected.add(f.name));
+// One checkbox for the page, with the three states a page can actually be in: none, some,
+// all. A button that only ever adds cannot express "clear the page again", which is the thing
+// you want straight after selecting it by mistake.
+$('#selall').onchange = e => {
+  if (e.target.checked) frames.forEach(f => selected.add(f.name));
+  else frames.forEach(f => selected.delete(f.name));
   renderGrid(); renderBatch();
 };
 $('#b-none').onclick = () => { selected.clear(); renderGrid(); renderBatch(); };
+
+function setMode(m) {
+  gridMode = m;
+  localStorage.setItem('dl-view', m);
+  $('#grid').className = m;
+  $('#v-grid').classList.toggle('on', m === 'grid');
+  $('#v-list').classList.toggle('on', m === 'list');
+}
+$('#v-grid').onclick = () => { setMode('grid'); };
+$('#v-list').onclick = () => { setMode('list'); };
 $('#annotate-first').onclick = () => frames.length && openFrame(frames[0].name);
 
 async function batch(status, label) {
@@ -531,6 +563,7 @@ async function openFrame(name, skipSave) {
   iw = d.w; ih = d.h;
   boxes = d.boxes.map(b => [b.x0, b.y0, b.x1, b.y1, b.cls]);
   sel = -1; cands = []; candHi = -1; dirty = false;
+  past = []; future = []; syncUndo();
   $('#title').textContent = `${name}  ${iw}×${ih}`;
   $('#reject').classList.toggle('on', !!d.rejected);
   const i = frames.findIndex(f => f.name === name);
@@ -538,7 +571,7 @@ async function openFrame(name, skipSave) {
   $('#cands').innerHTML = '<div class="empty">Press <b>A</b> to run the detectors.</div>';
   renderBoxes();
   img = new Image();
-  img.onload = () => { fitView(); render(); };
+  img.onload = () => { fitView(); render(); syncZoom(); };
   img.src = imgUrl(name);
 }
 
@@ -598,14 +631,16 @@ const nameOf = i => (classes[i] && classes[i].name) || ('class ' + i);
 function render() {
   const [W, H] = stageSize();
   if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
-  ctx.fillStyle = '#07090c'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#eceff3'; ctx.fillRect(0, 0, W, H);
   if (!img.complete || !iw) return;
   ctx.imageSmoothingEnabled = viewport.s < 2;
+  if (bright) ctx.filter = `brightness(${100 + bright}%)`;
   ctx.drawImage(img, viewport.x, viewport.y, iw * viewport.s, ih * viewport.s);
+  ctx.filter = 'none';
 
   cands.forEach((c, i) => {
     const [x0, y0] = toScr(c.box[0], c.box[1]), [x1, y1] = toScr(c.box[2], c.box[3]);
-    ctx.strokeStyle = i === candHi ? '#efa83e' : 'rgba(239,168,62,.5)';
+    ctx.strokeStyle = i === candHi ? '#e0ae00' : 'rgba(224,174,0,.55)';
     ctx.lineWidth = i === candHi ? 2 : 1;
     ctx.setLineDash(i === candHi ? [] : [3, 3]);
     ctx.strokeRect(x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4);
@@ -615,7 +650,7 @@ function render() {
   boxes.forEach((b, i) => {
     const [x0, y0] = toScr(b[0], b[1]), [x1, y1] = toScr(b[2], b[3]);
     const col = colorOf(b[4]);
-    ctx.strokeStyle = i === sel ? '#ffffff' : col;
+    ctx.strokeStyle = i === sel ? '#1b2230' : col;
     ctx.lineWidth = i === sel ? 2 : 1.5;
     ctx.strokeRect(x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4);
     ctx.font = '11px ui-monospace,monospace';
@@ -627,8 +662,8 @@ function render() {
     ctx.fillText(tag, x0 + 1, y0 - 7);
     if (i === sel) {
       const hp = handlePoints(b);
-      ctx.fillStyle = '#ffffff';
-      ctx.strokeStyle = '#0e1116'; ctx.lineWidth = 1;
+      ctx.fillStyle = '#1b2230';
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
       for (const k of HANDLES) {
         const [hx, hy] = hp[k];
         ctx.fillRect(hx - 4, hy - 4, 8, 8);
@@ -658,14 +693,18 @@ function loupe(px, py) {
   el.style.left = Math.max(4, Math.min(left, cv.width - S - 4)) + 'px';
   el.style.top = Math.max(4, Math.min(top, cv.height - S - 4)) + 'px';
   lctx.imageSmoothingEnabled = false;
-  lctx.fillStyle = '#000'; lctx.fillRect(0, 0, 210, 210);
+  lctx.fillStyle = '#fff'; lctx.fillRect(0, 0, 210, 210);
+  // the loupe is a magnifier, not a second opinion: it has to show the same adjustment the
+  // canvas is showing, or the two disagree about what is there
+  if (bright) lctx.filter = `brightness(${100 + bright}%)`;
   lctx.drawImage(img, ix - R / 2, iy - R / 2, R, R, 0, 0, 210, 210);
+  lctx.filter = 'none';
   boxes.forEach(b => {
     lctx.strokeStyle = colorOf(b[4]); lctx.lineWidth = 1;
     lctx.strokeRect((b[0] - (ix - R / 2)) * Z, (b[1] - (iy - R / 2)) * Z,
                     (b[2] - b[0]) * Z, (b[3] - b[1]) * Z);
   });
-  lctx.strokeStyle = 'rgba(239,168,62,.85)'; lctx.lineWidth = 1;
+  lctx.strokeStyle = 'rgba(224,174,0,.95)'; lctx.lineWidth = 1;
   lctx.beginPath();
   lctx.moveTo(105, 93); lctx.lineTo(105, 117);
   lctx.moveTo(93, 105); lctx.lineTo(117, 105);
@@ -682,7 +721,7 @@ stage.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
 
   const h = hitHandle(px, py);
-  if (h) { grab = {mode: 'resize', h, start: boxes[sel].slice()}; return; }
+  if (h) { remember(); grab = {mode: 'resize', h, start: boxes[sel].slice()}; return; }
 
   const [ix, iy] = toImg(px, py);
   const hit = boxes.findIndex(b =>
@@ -690,6 +729,7 @@ stage.addEventListener('mousedown', e => {
   if (hit >= 0) {
     sel = hit; classHi = boxes[hit][4];
     renderBoxes(); renderClassList(); render();
+    remember();
     grab = {mode: 'move', ox: ix, oy: iy, start: boxes[sel].slice()};
     return;
   }
@@ -750,6 +790,7 @@ stage.addEventListener('mouseup', async e => {
   if (moved) {
     const [x0, y0] = toImg(Math.min(d.sx, d.cx), Math.min(d.sy, d.cy));
     const [x1, y1] = toImg(Math.max(d.sx, d.cx), Math.max(d.sy, d.cy));
+    remember();
     boxes.push([x0, y0, x1, y1, activeClass]);
     sel = boxes.length - 1; dirty = true;
     renderBoxes(); render();
@@ -759,6 +800,7 @@ stage.addEventListener('mouseup', async e => {
     try {
       const r = await post('/api/snap', {folder, name: cur, x: ix, y: iy, rad: 70});
       if (r.box) {
+        remember();
         boxes.push([r.box[0], r.box[1], r.box[2], r.box[3], activeClass]);
         sel = boxes.length - 1; dirty = true;
         toast(`Snapped ${Math.round(r.box[2] - r.box[0])}×${Math.round(r.box[3] - r.box[1])} px`
@@ -776,10 +818,41 @@ stage.addEventListener('wheel', e => {
   const [ix, iy] = toImg(px, py);
   viewport.s = Math.max(0.05, Math.min(80, viewport.s * (e.deltaY < 0 ? 1.18 : 1 / 1.18)));
   viewport.x = px - ix * viewport.s; viewport.y = py - iy * viewport.s;
-  render(); loupe(px, py);
+  render(); syncZoom(); loupe(px, py);
 }, {passive: false});
 
 /* ---------------------------------------------------------------- panels */
+/* Every change to the box list goes through here first, so undo works everywhere without
+ * each call site having to remember it. */
+function remember() {
+  past.push(boxes.map(b => b.slice()));
+  if (past.length > 80) past.shift();
+  future.length = 0;
+  syncUndo();
+}
+
+function syncUndo() {
+  const u = $('#undo'), r = $('#redo');
+  if (u) u.disabled = !past.length;
+  if (r) r.disabled = !future.length;
+}
+
+function undo() {
+  if (!past.length) { toast('Nothing to undo'); return; }
+  future.push(boxes.map(b => b.slice()));
+  boxes = past.pop();
+  sel = -1; dirty = true;
+  syncUndo(); renderBoxes(); render();
+}
+
+function redo() {
+  if (!future.length) { toast('Nothing to redo'); return; }
+  past.push(boxes.map(b => b.slice()));
+  boxes = future.pop();
+  sel = -1; dirty = true;
+  syncUndo(); renderBoxes(); render();
+}
+
 function renderBoxes() {
   $('#bcount').textContent = boxes.length || '';
   $('#boxes').innerHTML = boxes.length ? boxes.map((b, i) =>
@@ -795,6 +868,7 @@ function renderBoxes() {
     el.onclick = () => { sel = i; classHi = boxes[i][4]; renderBoxes(); renderClassList(); render(); };
     el.querySelector('.x').onclick = e => {
       e.stopPropagation();
+      remember();
       boxes.splice(i, 1); sel = -1; dirty = true; renderBoxes(); render();
     };
   });
@@ -813,6 +887,7 @@ function renderCands() {
     el.onmouseenter = () => { candHi = i; render(); };
     el.onclick = () => {
       const b = cands[i].box;
+      remember();
       boxes.push([b[0], b[1], b[2], b[3], activeClass]);
       sel = boxes.length - 1; dirty = true;
       renderBoxes(); render();
@@ -859,17 +934,18 @@ $('#back').onclick = async () => {
 };
 $('#prev').onclick = () => step(-1);
 $('#next').onclick = () => step(1);
-$('#fit').onclick = () => { fitView(); render(); };
 $('#save').onclick = () => save();
 $('#ai').onclick = runAI;
 $('#enh').onclick = () => {
   enhance = !enhance;
   $('#enh').classList.toggle('on', enhance);
-  img = new Image();
-  img.onload = render;
-  img.src = imgUrl(cur);
+  const next = new Image();
+  next.onload = () => { img = next; render(); };
+  next.src = imgUrl(cur);
 };
-$('#blank').onclick = async () => { boxes = []; sel = -1; dirty = true; renderBoxes(); render(); await save(); };
+$('#blank').onclick = async () => {
+  remember(); boxes = []; sel = -1; dirty = true; renderBoxes(); render(); await save();
+};
 $('#reject').onclick = async () => {
   const on = $('#reject').classList.contains('on');
   await post('/api/status', {folder, names: [cur], status: on ? 'unrejected' : 'rejected'});
@@ -892,6 +968,35 @@ $('#del').onclick = async () => {
   if (!frames.length) { setView('gallery'); loadFrames(); return; }
   openFrame(frames[Math.min(i, frames.length - 1)].name, true);
 };
+
+/* ---------------------------------------------------------------- view bar */
+function zoomTo(scale, ax, ay) {
+  const [W, H] = stageSize();
+  const cxp = ax === undefined ? W / 2 : ax;
+  const cyp = ay === undefined ? H / 2 : ay;
+  const [ix, iy] = toImg(cxp, cyp);
+  viewport.s = Math.max(0.02, Math.min(120, scale));
+  viewport.x = cxp - ix * viewport.s;
+  viewport.y = cyp - iy * viewport.s;
+  render(); syncZoom();
+}
+
+function syncZoom() {
+  const el = $('#zoomval');
+  if (el) el.textContent = Math.round(viewport.s * 100) + '%';
+}
+
+$('#z-in').onclick = () => zoomTo(viewport.s * 1.25);
+$('#z-out').onclick = () => zoomTo(viewport.s / 1.25);
+$('#z-fit').onclick = () => { fitView(); render(); syncZoom(); };
+$('#zoomval').onclick = () => zoomTo(1);
+$('#undo').onclick = undo;
+$('#redo').onclick = redo;
+$('#bright').oninput = e => { bright = +e.target.value; render(); };
+$('#bright').ondblclick = e => { bright = 0; e.target.value = 0; render(); };
+$('#keys').onclick = () => $('#keysveil').classList.add('on');
+$('#keysclose').onclick = () => $('#keysveil').classList.remove('on');
+$('#keysveil').onclick = e => { if (e.target.id === 'keysveil') e.currentTarget.classList.remove('on'); };
 
 /* ---------------------------------------------------------------- keys */
 document.addEventListener('keydown', e => {
@@ -917,22 +1022,23 @@ document.addEventListener('keydown', e => {
     if (i < classes.length) setActiveClass(i);
     return;
   }
-  if (k === '0') { fitView(); render(); return; }
-  if (k === '1') {
-    const [W, H] = stageSize();
-    const cx = iw / 2, cy = ih / 2;
-    viewport.s = 1; viewport.x = W / 2 - cx; viewport.y = H / 2 - cy;
-    render(); return;
+  if (k === '0') { fitView(); render(); syncZoom(); return; }
+  if (k === '1') { zoomTo(1); return; }
+  if (k === '?') { $('#keysveil').classList.toggle('on'); return; }
+  if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'Z')) {
+    e.preventDefault(); e.shiftKey ? redo() : undo(); return;
   }
+  if ((e.ctrlKey || e.metaKey) && (k === 'y' || k === 'Y')) { e.preventDefault(); redo(); return; }
   if (k === 's' || k === 'S') { save(); return; }
   if (k === 'n' || k === 'N') { $('#blank').click(); return; }
   if (k === 'r' || k === 'R') { $('#reject').click(); return; }
   if (k === 'a' || k === 'A') { runAI(); return; }
   if (k === 'e' || k === 'E') { $('#enh').click(); return; }
-  if (k === 'f' || k === 'F') { fitView(); render(); return; }
+  if (k === 'f' || k === 'F') { fitView(); render(); syncZoom(); return; }
   if (k === 'Escape') { sel = -1; cands = []; renderBoxes(); renderCands(); render(); return; }
   if ((k === 'Delete' || k === 'Backspace') && sel >= 0) {
     e.preventDefault();
+    remember();
     boxes.splice(sel, 1); sel = -1; dirty = true; renderBoxes(); render();
   }
 });
@@ -947,7 +1053,16 @@ window.addEventListener('beforeunload', e => {
 });
 
 /* ---------------------------------------------------------------- boot */
+function prefetchNextPage() {
+  if (page >= pages) return;
+  api(`/api/frames?folder=${encodeURIComponent(folder)}&status=${status_}` +
+      `&page=${page + 1}&per=${per}&q=${encodeURIComponent(query)}`)
+    .then(r => r.items.slice(0, 24).forEach(f => { new Image().src = thumbUrl(f.name); }))
+    .catch(() => {});
+}
+
 (async () => {
+  setMode(gridMode);
   const s = await api('/api/state');
   base = s.base; root = s.root;
   $('#modelbadge').textContent = s.model ? 'model loaded' : 'imaging only';

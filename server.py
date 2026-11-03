@@ -53,11 +53,12 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -131,6 +132,64 @@ def images_of(d: Path):
     return sorted((p for p in image_dir(d).iterdir()
                    if p.is_file() and p.suffix.lower() in IMG_EXT),
                   key=lambda q: (frame_no(q.name), q.name))
+
+
+# Scanning a folder means stat-ing every image and reading every label file. On 2,000 frames
+# that is 200 ms, and it was being paid again on every page change, tab switch and save. The
+# answer is cached against the modification times of the two directories that can invalidate
+# it, so an edit is still seen immediately but an unchanged folder is free.
+_SCAN: dict = {}
+_WALK: dict = {}
+WALK_TTL = 20.0                  # seconds a directory listing is reused for
+
+
+def _stamp(d: Path) -> tuple:
+    """
+    A fingerprint that changes whenever anything the scan depends on changes.
+
+    A directory's own mtime is not enough: writing into a label file that already exists does
+    not touch the directory, so a cache keyed on that alone never notices an edit - it reports
+    stale counts, which is worse than being slow. The newest mtime among the label files is
+    the part that actually moves, and scandir gets it without opening anything.
+    """
+    out = []
+    for sub in (image_dir(d), d / SIDE):
+        try:
+            out.append(sub.stat().st_mtime_ns)
+        except OSError:
+            out.append(0)
+    newest = count = 0
+    try:
+        with os.scandir(label_dir(d)) as it:
+            for e in it:
+                if e.name.endswith(".txt"):
+                    count += 1
+                    m = e.stat().st_mtime_ns
+                    if m > newest:
+                        newest = m
+    except OSError:
+        pass
+    return tuple(out) + (newest, count)
+
+
+def scan_frames(d: Path):
+    """[(name, has_label, n_boxes, classes, status)] for a folder, cached on directory mtime."""
+    key = str(d)
+    stamp = _stamp(d)
+    hit = _SCAN.get(key)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    rj = rejected_set(d)
+    rows = []
+    for p in images_of(d):
+        has, n, cls = label_counts(d, p.stem)
+        rows.append((p.name, has, n, cls, status_of(has, n, p.name, rj)))
+    _SCAN[key] = (stamp, rows)
+    return rows
+
+
+def forget_scan(d: Path):
+    _SCAN.pop(str(d), None)
 
 
 def frame_no(name: str) -> int:
@@ -293,21 +352,28 @@ def write_boxes(lp: Path, boxes, w: int, h: int) -> int:
 
 
 def label_counts(d: Path, stem: str):
-    """(has_label, n_boxes, class ids present) for one frame, without loading the image."""
+    """
+    (has_label, n_boxes, {class: boxes of it}) for one frame, without loading the image.
+
+    Per class rather than a set of ids: a frame with three gulls in it counts as three towards
+    the bird total, and the class manager's "delete this class removes N boxes" has to be the
+    number it will actually remove.
+    """
     lp = label_dir(d) / (stem + ".txt")
     if not lp.exists():
-        return False, 0, []
-    n, cls = 0, set()
+        return False, 0, {}
+    n, cls = 0, {}
     for line in lp.read_text().splitlines():
         t = line.split()
         if len(t) != 5:
             continue
         n += 1
         try:
-            cls.add(int(float(t[0])))
+            c = int(float(t[0]))
         except ValueError:
-            pass
-    return True, n, sorted(cls)
+            continue
+        cls[c] = cls.get(c, 0) + 1
+    return True, n, cls
 
 
 def status_of(has_label, n_boxes, name, rejected):
@@ -539,22 +605,30 @@ def folders():
             return
         seen.add(d)
         rel = "." if d == root else d.relative_to(root).as_posix()
-        rj = rejected_set(d)
         counts = {"unassigned": 0, "annotated": 0, "null": 0, "rejected": 0}
-        for p in images_of(d):
-            has, n, _ = label_counts(d, p.stem)
-            counts[status_of(has, n, p.name, rj)] += 1
+        for _, _, _, _, st in scan_frames(d):
+            counts[st] += 1
         out.append({"name": rel, "count": info["images"], "layout": info["layout"], **counts})
 
     # images/ is half of its parent's layout, not a folder in its own right. Listing it
     # separately showed every dataset folder twice - once correctly with its labels, and once
     # as a flat folder where all 1,052 frames looked unassigned.
     skip = {"images", "labels", "annotated", "crops", SIDE}
+    # The walk itself is the slow half on a big tree, and folders appear and vanish far more
+    # rarely than labels change. The per-folder COUNTS still come from scan_frames, which is
+    # keyed on directory mtime, so an edit shows up at once - only the shape of the tree is
+    # held for a few seconds.
+    hit = _WALK.get(str(root))
+    if hit and time.monotonic() - hit[0] < WALK_TTL:
+        dirs = hit[1]
+    else:
+        dirs = [p for p in sorted(root.rglob("*"))
+                if p.is_dir() and not p.name.startswith(".") and p.name not in skip
+                and not any(q in skip for q in p.relative_to(root).parts)]
+        _WALK[str(root)] = (time.monotonic(), dirs)
     add(root)
-    for p in sorted(root.rglob("*")):
-        if p.is_dir() and not p.name.startswith(".") and p.name not in skip \
-                and not any(q in skip for q in p.relative_to(root).parts):
-            add(p)
+    for p in dirs:
+        add(p)
     return out
 
 
@@ -583,19 +657,15 @@ def all_label_files():
 @app.get("/api/class-usage")
 def class_usage():
     """How many boxes point at each class index, across the whole selected root."""
-    use = {}
-    files = 0
-    for lp in all_label_files():
-        files += 1
-        for line in lp.read_text().splitlines():
-            t = line.split()
-            if len(t) != 5:
+    use, files = {}, 0
+    for f in folders():
+        d = folder_dir(f["name"])
+        for _name, has, _n, cls, _st in scan_frames(d):
+            if not has:
                 continue
-            try:
-                c = int(float(t[0]))
-            except ValueError:
-                continue
-            use[c] = use.get(c, 0) + 1
+            files += 1
+            for c, k in cls.items():
+                use[c] = use.get(c, 0) + k
     return {"usage": use, "files": files}
 
 
@@ -664,6 +734,8 @@ def set_classes(req: ClassReq):
                 lp.write_text("\n".join(lines) + ("\n" if lines else ""))
                 touched += 1
 
+    if touched:
+        _SCAN.clear()
     classes_file().write_text("".join(n + "\n" for n in names))
     out = classes_payload()
     out["warning"] = ""
@@ -682,7 +754,6 @@ def set_classes(req: ClassReq):
 @app.get("/api/frames")
 def frames(folder: str, status: str = "all", page: int = 1, per: int = 60, q: str = ""):
     d = folder_dir(folder)
-    rj = rejected_set(d)
     notes = {}
     f = d / "REVIEW.csv"
     if f.exists():
@@ -690,17 +761,15 @@ def frames(folder: str, status: str = "all", page: int = 1, per: int = 60, q: st
             notes[r.get("image", "")] = r.get("note", "")
     items, counts = [], {"all": 0, "unassigned": 0, "annotated": 0, "null": 0, "rejected": 0}
     needle = q.strip().lower()
-    for p in images_of(d):
-        has, n, cls = label_counts(d, p.stem)
-        st = status_of(has, n, p.name, rj)
+    for name, _has, n, cls, st in scan_frames(d):
         counts[st] += 1
         counts["all"] += 1
-        if needle and needle not in p.name.lower():
+        if needle and needle not in name.lower():
             continue
         if status not in ("all", st):
             continue
-        items.append({"name": p.name, "n": frame_no(p.name), "boxes": n, "status": st,
-                      "classes": cls, "note": notes.get(p.name, "")})
+        items.append({"name": name, "n": frame_no(name), "boxes": n, "status": st,
+                      "classes": sorted(cls), "note": notes.get(name, "")})
     per = max(1, min(400, per))
     pages = max(1, (len(items) + per - 1) // per)
     page = max(1, min(page, pages))
@@ -714,7 +783,7 @@ def hex_bgr(h: str):
 
 
 @app.get("/api/thumb")
-def thumb(folder: str, name: str, w: int = 320, ann: int = 1):
+def thumb(request: Request, folder: str, name: str, w: int = 320, ann: int = 1):
     """
     A card-sized copy, with the boxes drawn on by default.
 
@@ -729,9 +798,17 @@ def thumb(folder: str, name: str, w: int = 320, ann: int = 1):
     lp = label_dir(d) / (Path(name).stem + ".txt")
     lstamp = lp.stat().st_mtime_ns if (ann and lp.exists()) else 0
     key = hashlib.sha1(f"{p}|{p.stat().st_mtime_ns}|{w}|{ann}|{lstamp}".encode()).hexdigest()
+    # The key already covers both mtimes, so the answer for a given URL+ETag can never go
+    # stale: an edited label changes the key. That lets the browser keep the picture and skip
+    # the request entirely, which is the difference between a page of 60 cards redrawing
+    # instantly and re-fetching 60 files every time a tab is clicked.
+    etag = f'"{key}"'
+    headers = {"ETag": etag, "Cache-Control": "private, max-age=86400"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
     cached = THUMB_CACHE / key[:2] / (key + ".jpg")
     if cached.exists():
-        return FileResponse(cached, media_type="image/jpeg")
+        return FileResponse(cached, media_type="image/jpeg", headers=headers)
     im = cv2.imread(str(p))
     if im is None:
         raise HTTPException(415, "unreadable image")
@@ -755,7 +832,7 @@ def thumb(folder: str, name: str, w: int = 320, ann: int = 1):
         cached.write_bytes(buf.tobytes())
     except OSError:
         pass
-    return Response(buf.tobytes(), media_type="image/jpeg")
+    return Response(buf.tobytes(), media_type="image/jpeg", headers=headers)
 
 
 @app.get("/api/image")
@@ -803,6 +880,7 @@ def save_label(req: SaveReq):
     n = write_boxes(lp, req.boxes, w, h)
     widest = max((b["x1"] - b["x0"] for b in req.boxes), default=0)
     redraw(d, req.name, req.boxes)
+    forget_scan(d)
     update_review(d, req.name, n, widest,
                   req.note or ("" if n else "nothing in frame - marked by hand"))
     return {"ok": True, "boxes": n}
@@ -836,6 +914,7 @@ def set_status(req: StatusReq):
                 if lp.exists():
                     lp.unlink()
         changed += 1
+    forget_scan(d)
     write_rejected(d, rj)
     return {"ok": True, "changed": changed}
 
@@ -865,6 +944,7 @@ def delete_frames(req: DelReq):
             wr = csv.DictWriter(fh, fieldnames=FIELDS)
             wr.writeheader()
             wr.writerows([{k: r.get(k, "") for k in FIELDS} for r in rows])
+    forget_scan(d)
     rj = rejected_set(d) - set(req.names)
     write_rejected(d, rj)
     return {"ok": True, "removed": removed}
