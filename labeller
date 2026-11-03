@@ -13,6 +13,29 @@ set -uo pipefail
 REPO="/home/khive/Khive/PROJECTS/drone-labeler"
 MODEL="/home/khive/Downloads/ai model/v16-day-vision-training-on-v15/drone_camera_model_v16-day-vision-on-v15.pt"
 
+# The dependencies are not in the system python - opencv and FastAPI live in a virtualenv. An
+# interactive shell and this script may well resolve `python3` to different interpreters, so
+# the one to run with is the first that can actually import what the server needs, not whatever
+# happens to be on PATH. Plain python, never -I: isolated mode also drops user site-packages,
+# which is a perfectly normal place for these to be installed.
+PYTHONS=(
+  "$REPO/.venv/bin/python3"
+  "/home/khive/Khive/PROJECTS/Dron Monitoring/.venv/bin/python3"
+  "$(command -v python3 || true)"
+  /usr/bin/python3
+)
+
+pick_python() {
+  local p
+  for p in "${PYTHONS[@]}"; do
+    [[ -n "$p" && -x "$p" ]] || continue
+    if "$p" -c "import cv2, numpy, fastapi, uvicorn, pydantic" >/dev/null 2>&1; then
+      printf '%s' "$p"; return 0
+    fi
+  done
+  return 1
+}
+
 target=""
 use_model=1
 want_port=""
@@ -34,11 +57,20 @@ fi
 
 [[ -d "$REPO" ]] || { echo "labeller: no repo at $REPO - edit REPO in $0" >&2; exit 1; }
 
+if ! PY="$(pick_python)"; then
+  echo "labeller: no python found with the server's dependencies." >&2
+  echo "          tried: ${PYTHONS[*]}" >&2
+  echo "          install them with:" >&2
+  echo "            python3 -m venv '$REPO/.venv'" >&2
+  echo "            '$REPO/.venv/bin/pip' install -r '$REPO/requirements.txt'" >&2
+  exit 1
+fi
+
 # Ask whether the port can be BOUND, not whether something answers on it. A connect test says
 # nothing about a port held by a socket in TIME_WAIT or bound on another interface, and those
 # are exactly the cases where the server then dies on startup with the terminal already gone.
 free_port() {
-  python3 - "$@" <<'PY'
+  "$PY" - "$@" <<'PY'
 import socket, sys
 want = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else ""
 candidates = [int(want)] if want else range(8077, 8098)
@@ -91,11 +123,11 @@ fi
 # -u so the server's own banner appears as it starts rather than sitting in a buffer, and no
 # exec so a failure to start can be reported instead of just returning to the prompt.
 cd "$REPO"
-python3 -I -u server.py "${args[@]}"
+"$PY" -u server.py "${args[@]}"
 code=$?
 if [[ $code -ne 0 ]]; then
   echo >&2
   echo "labeller: the server exited with status $code" >&2
-  echo "          try:  cd '$REPO' && python3 -I server.py --root '$target'" >&2
+  echo "          try:  cd '$REPO' && '$PY' server.py --root '$target'" >&2
 fi
 exit $code
