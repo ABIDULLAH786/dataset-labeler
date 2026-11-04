@@ -345,11 +345,19 @@ def read_boxes(lp: Path, w: int, h: int):
     return out
 
 
+def clamp(v, hi):
+    return min(max(0.0, float(v)), float(hi))
+
+
 def write_boxes(lp: Path, boxes, w: int, h: int) -> int:
     lines = []
     for b in boxes:
-        x0, x1 = sorted((max(0.0, float(b["x0"])), min(float(w), float(b["x1"]))))
-        y0, y1 = sorted((max(0.0, float(b["y0"])), min(float(h), float(b["y1"]))))
+        # Clamp BOTH ends into the frame before ordering them. Clamping only the low end of
+        # one and the high end of the other leaves a box that sits entirely past the edge
+        # intact: max(0,1400)=1400 and min(1280,1500)=1280 sort to (1280,1400), and the file
+        # then gets a centre of 1.05, outside the 0..1 a YOLO label is allowed to use.
+        x0, x1 = sorted((clamp(b["x0"], w), clamp(b["x1"], w)))
+        y0, y1 = sorted((clamp(b["y0"], h), clamp(b["y1"], h)))
         if x1 - x0 < 1 or y1 - y0 < 1:
             continue
         lines.append("%d %.6f %.6f %.6f %.6f"

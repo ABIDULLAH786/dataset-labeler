@@ -632,6 +632,25 @@ function norm(b) {
           Math.max(b[0], b[2]), Math.max(b[1], b[3]), b[4] ?? activeClass];
 }
 
+/* A label is stored as a fraction of the image, so a box reaching past the edge has no way to
+ * be written down truthfully: the server clamps it and the file ends up describing something
+ * other than what was on screen. Keeping the box inside the frame while it is being edited is
+ * what makes the two agree. */
+const lim = (v, hi) => Math.min(Math.max(0, v), hi);
+
+function clampBox(b) {
+  return [lim(b[0], iw), lim(b[1], ih), lim(b[2], iw), lim(b[3], ih), b[4]];
+}
+
+/* Moving keeps the box's size and stops it at the edge, rather than squashing it flat against
+ * one, which is what clamping each corner on its own would do. */
+function shiftInside(b, dx, dy) {
+  const w = b[2] - b[0], h = b[3] - b[1];
+  const x = Math.min(Math.max(0, b[0] + dx), Math.max(0, iw - w));
+  const y = Math.min(Math.max(0, b[1] + dy), Math.max(0, ih - h));
+  return [x, y, x + w, y + h, b[4]];
+}
+
 function handlePoints(b) {
   const [x0, y0] = toScr(b[0], b[1]), [x1, y1] = toScr(b[2], b[3]);
   const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
@@ -784,21 +803,25 @@ stage.addEventListener('mousemove', e => {
     const [ix, iy] = toImg(px, py);
     const s = grab.start;
     if (grab.mode === 'move') {
-      const dx = ix - grab.ox, dy = iy - grab.oy;
-      boxes[sel] = [s[0] + dx, s[1] + dy, s[2] + dx, s[3] + dy, s[4]];
+      boxes[sel] = shiftInside(s, ix - grab.ox, iy - grab.oy);
     } else {
       let [x0, y0, x1, y1] = s;
-      if (grab.h.includes('n')) y0 = iy;
-      if (grab.h.includes('s')) y1 = iy;
-      if (grab.h.includes('w')) x0 = ix;
-      if (grab.h.includes('e')) x1 = ix;
+      if (grab.h.includes('n')) y0 = lim(iy, ih);
+      if (grab.h.includes('s')) y1 = lim(iy, ih);
+      if (grab.h.includes('w')) x0 = lim(ix, iw);
+      if (grab.h.includes('e')) x1 = lim(ix, iw);
       boxes[sel] = norm([x0, y0, x1, y1, s[4]]);
     }
     dirty = true; renderBoxes(); render();
     return;
   }
 
-  if (draw_) { draw_.cx = px; draw_.cy = py; render(); return; }
+  if (draw_) {
+    const [bx, by] = toScr(0, 0), [ex, ey] = toScr(iw, ih);
+    draw_.cx = Math.min(Math.max(px, bx), ex);
+    draw_.cy = Math.min(Math.max(py, by), ey);
+    render(); return;
+  }
 
   const h = hitHandle(px, py);
   if (h) stage.style.cursor = (h === 'n' || h === 's') ? 'ns-resize' :
@@ -817,7 +840,7 @@ stage.addEventListener('mouseleave', () => { $('#loupe').style.display = 'none';
 
 stage.addEventListener('mouseup', async e => {
   if (pan) { pan = null; return; }
-  if (grab) { grab = null; boxes[sel] = norm(boxes[sel]); renderBoxes(); render(); return; }
+  if (grab) { grab = null; boxes[sel] = clampBox(norm(boxes[sel])); renderBoxes(); render(); return; }
   if (!draw_) return;
 
   const d = draw_; draw_ = null;
@@ -827,8 +850,13 @@ stage.addEventListener('mouseup', async e => {
   if (moved) {
     const [x0, y0] = toImg(Math.min(d.sx, d.cx), Math.min(d.sy, d.cy));
     const [x1, y1] = toImg(Math.max(d.sx, d.cx), Math.max(d.sy, d.cy));
+    const nb = clampBox([x0, y0, x1, y1, activeClass]);
+    if (nb[2] - nb[0] < 1 || nb[3] - nb[1] < 1) {
+      toast('That box falls outside the image', 'err');
+      render(); return;
+    }
     remember();
-    boxes.push([x0, y0, x1, y1, activeClass]);
+    boxes.push(nb);
     sel = boxes.length - 1; dirty = true;
     renderBoxes(); render();
   } else {
