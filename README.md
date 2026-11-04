@@ -39,50 +39,153 @@ local z-score, and lists what each found. They are suggestions to accept or igno
 never trusted on its own — it is usually the model being retrained, which is why the frames need
 labelling in the first place.
 
+## Requirements
+
+| | |
+|---|---|
+| **Python 3.10 or newer** | the code uses `X \| None` type syntax, which 3.9 cannot parse |
+| **A desktop session** | it opens a browser window; it is a local tool, not a hosted one |
+| `zenity` or `kdialog` | optional, for the native **Browse…** dialog. Falls back to `tkinter`, and you can always paste a path instead |
+
+Linux, macOS and WSL all work. Everything else is installed by pip in step 2.
+
+### Step 0: check your Python
+
+```bash
+python3 --version
+```
+
+If that prints 3.10 or higher, skip ahead. Otherwise:
+
+```bash
+# Debian / Ubuntu
+sudo apt update && sudo apt install -y python3 python3-venv python3-pip
+
+# Fedora
+sudo dnf install -y python3 python3-pip
+
+# macOS, with Homebrew
+brew install python
+```
+
+For the native folder dialog on Linux, if you do not already have it:
+
+```bash
+sudo apt install -y zenity        # Debian / Ubuntu
+sudo dnf install -y zenity        # Fedora
+```
+
+macOS and Windows get the dialog through `tkinter`, which ships with Python.
+
 ## Install
+
+### Step 1: get the code
 
 ```bash
 git clone https://github.com/ABIDULLAH786/dataset-labeler
 cd dataset-labeler
+```
+
+### Step 2: create a virtual environment and install into it
+
+```bash
 python3 -m venv .venv
+.venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
 ```
 
-Optional, only for the model-assisted candidates:
+That installs FastAPI, Uvicorn, OpenCV, NumPy and Pydantic, about 100 MB. A virtual environment
+keeps them off your system Python, and the launcher looks in `.venv` first, so nothing needs to
+be activated later.
+
+### Step 3 (optional): the detection model
+
+Only needed for the **AI assist** button. Everything else works without it.
 
 ```bash
 .venv/bin/pip install ultralytics
 ```
 
-## Run
-
-Put the launcher on your PATH once:
+Then point the tool at your weights, either way round:
 
 ```bash
+export LABELLER_MODEL=/path/to/weights.pt    # or
+cp /path/to/weights.pt model.pt              # beside the script
+```
+
+### Step 4: put the launcher on your PATH
+
+```bash
+mkdir -p ~/.local/bin
 ln -s "$PWD/labeller" ~/.local/bin/labeller
 ```
 
-Then, from anywhere:
+If `labeller` is not found afterwards, `~/.local/bin` is not on your PATH. Add it:
 
 ```bash
-cd /some/folder/of/images && labeller   # label the folder you are standing in
-labeller path/to/images                 # label that one
-labeller . --no-model                   # skip the detection model, starts faster
-labeller --port 9000                    # pin a port
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 
-It opens your browser and takes the first free port from 8077 up, so two folders can be open
-side by side. For the assisted candidates, set `LABELLER_MODEL=/path/to/weights.pt` or drop a
-`model.pt` beside the script.
-
-Or run the server directly:
+### Step 5: check it works
 
 ```bash
-python3 server.py                                 # browse from your home directory
-python3 server.py --root /path/to/folder          # open with that folder selected
-python3 server.py --base /mnt/data --port 8001    # start the browser under /mnt/data
-python3 server.py --root ... --lock-base          # refuse to open anything outside --base
+labeller --help
 ```
+
+## Run
+
+```bash
+cd /some/folder/of/images
+labeller
+```
+
+That is the whole thing. It prints the folder and the URL, opens your browser, and serves from
+the first free port starting at 8077, so two folders can be open side by side.
+
+```
+folder  /home/you/datasets/clip-03
+open    http://127.0.0.1:8077
+```
+
+Other ways to start it:
+
+| | |
+|---|---|
+| `labeller path/to/images` | label that folder instead of the current one |
+| `labeller . --no-model` | skip the model, starts in about a second |
+| `labeller --port 9000` | pin a port |
+
+Stop it with `Ctrl+C` in the terminal it is running in.
+
+### First run: create a class
+
+There is no default class, on purpose, so nothing gets written as a made-up `object`. The header
+shows **No classes yet, create one** and drawing is refused until there is one.
+
+Type a name into **Filter or create a class** on the right and press Enter. It is then remembered
+for every folder you open afterwards, so this is a one-time step.
+
+### Running the server directly
+
+The launcher is a convenience. The server takes the same work:
+
+```bash
+.venv/bin/python server.py                                 # browse from your home directory
+.venv/bin/python server.py --root /path/to/folder          # open with that folder selected
+.venv/bin/python server.py --base /mnt/data --port 8001    # start the browser under /mnt/data
+.venv/bin/python server.py --root ... --lock-base          # refuse anything outside --base
+.venv/bin/python server.py --root ... --model weights.pt   # enable assisted candidates
+```
+
+### If something goes wrong
+
+| Symptom | Cause |
+|---|---|
+| `ModuleNotFoundError: No module named 'cv2'` | step 2 was skipped, or a different Python is being used. The launcher reports which interpreters it tried |
+| `labeller: command not found` | `~/.local/bin` is not on your PATH, see step 4 |
+| `no free port between 8077 and 8097` | 21 instances are already running. `pkill -f server.py` clears them |
+| **Browse…** does nothing | no `zenity`, `kdialog` or `tkinter`. Paste the path into the box beside it instead |
+| The browser shows an old version after an update | hard-reload with `Ctrl+Shift+R` |
 
 ## Choosing a folder
 

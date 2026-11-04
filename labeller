@@ -47,6 +47,20 @@ want_port=""
 pass=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)
+      # Answer here rather than passing it through. Forwarding it meant the launcher first
+      # chose a port and opened a browser, then the server printed its usage and exited.
+      awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$(readlink -f "$0")"
+      echo
+      if h="$(pick_python)"; then
+        echo "Anything else is passed through to server.py:"
+        exec "$h" "$REPO/server.py" --help
+      fi
+      echo "server.py options are unavailable: no python here has the dependencies."
+      echo "Install them with:  python3 -m venv '$REPO/.venv' &&" \
+           "'$REPO/.venv/bin/pip' install -r '$REPO/requirements.txt'"
+      exit 0
+      ;;
     --no-model) use_model=0 ;;
     --port)     want_port="${2:-}"; shift ;;
     --port=*)   want_port="${1#*=}" ;;
