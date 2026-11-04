@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# labeller - open the Drone Labeller on a folder, from anywhere.
+# labeller - open Dataset Labeler on a folder, from anywhere.
 #
 #   labeller                     label the current directory
 #   labeller path/to/frames      label that directory
@@ -10,8 +10,13 @@
 # starting point: Browse... inside the tool reaches anywhere on the machine.
 set -uo pipefail
 
-REPO="/home/khive/Khive/PROJECTS/drone-labeler"
-MODEL="/home/khive/Downloads/ai model/v16-day-vision-training-on-v15/drone_camera_model_v16-day-vision-on-v15.pt"
+# Where this script lives, following the symlink people put on their PATH. Hardcoding the
+# path means the tool breaks the moment the checkout is moved or someone else clones it.
+REPO="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+# Optional detection model for the assisted candidates. Point LABELLER_MODEL at a .pt file, or
+# drop one at model.pt beside this script. Everything except "AI assist" works without it.
+MODEL="${LABELLER_MODEL:-$REPO/model.pt}"
 
 # The dependencies are not in the system python - opencv and FastAPI live in a virtualenv. An
 # interactive shell and this script may well resolve `python3` to different interpreters, so
@@ -20,7 +25,7 @@ MODEL="/home/khive/Downloads/ai model/v16-day-vision-training-on-v15/drone_camer
 # which is a perfectly normal place for these to be installed.
 PYTHONS=(
   "$REPO/.venv/bin/python3"
-  "/home/khive/Khive/PROJECTS/Dron Monitoring/.venv/bin/python3"
+  "${VIRTUAL_ENV:-}/bin/python3"
   "$(command -v python3 || true)"
   /usr/bin/python3
 )

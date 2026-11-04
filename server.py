@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Drone Labeller - a local web tool for boxing small aerial targets in folders of frames.
+Dataset Labeler - a local web tool for drawing boxes on folders of images.
 
 Pointing at an 8 px drone in words does not work. This serves image folders in a browser so the
 box can be drawn where the target actually is, and writes the YOLO label straight back to disk
@@ -64,7 +64,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 HERE = Path(__file__).resolve().parent
-app = FastAPI(title="Drone Labeller")
+app = FastAPI(title="Dataset Labeler")
 
 BASE: Path = Path.home()          # the sandbox the browser may not climb out of
 ROOT: Path | None = None          # the folder currently being worked in
@@ -76,13 +76,13 @@ _clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
 IMG_EXT = (".jpg", ".jpeg", ".png")
 FIELDS = ["image", "labelled", "score", "box_w_px", "found_by", "note"]
 SIDE = ".labeller"                # per-folder state the tool owns; never training data
-THUMB_CACHE = Path.home() / ".cache" / "drone-labeler" / "thumbs"
+THUMB_CACHE = Path.home() / ".cache" / "dataset-labeler" / "thumbs"
 
 # No default class. A made-up "object" gets saved into real label files by whoever does not
 # notice it, and a class list is the one thing the tool must not invent on someone's behalf.
 # What it does instead is REMEMBER: the last list used is kept here and offered to the next
 # folder that names none of its own, so a list is created once and carries across folders.
-REMEMBERED = Path.home() / ".config" / "drone-labeler" / "classes.txt"
+REMEMBERED = Path.home() / ".config" / "dataset-labeler" / "classes.txt"
 PALETTE = ["#f5c518", "#2fb673", "#3c90e0", "#9b5fd0", "#e0614f", "#17a8a0", "#e0699f",
            "#6b7fa8", "#c08a3e", "#7cb342"]
 

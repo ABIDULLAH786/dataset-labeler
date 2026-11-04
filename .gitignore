@@ -3,3 +3,8 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# the tool's own state, never training data
+.labeller/
+model.pt
+classes.txt

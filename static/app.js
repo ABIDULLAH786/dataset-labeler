@@ -1,5 +1,5 @@
 /*
- * Drone Labeller - browser side.
+ * Dataset Labeler - browser side.
  *
  * Three views, switched by setView: browse (pick a folder), gallery (cards, tabs, pages) and
  * annotate (canvas). The gallery exists because scanning a folder one frame at a time tells you
