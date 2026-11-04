@@ -19,6 +19,7 @@
 <g id="i-redo"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.1-5.6L21 10"/></g>
 <g id="i-contrast"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></g>
 <g id="i-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g>
+<g id="i-loupe"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/><path d="M11 8v6M8 11h6"/></g>
 <g id="i-keyboard"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></g>
 <g id="i-grid"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></g>
 <g id="i-list"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></g>
@@ -143,6 +144,7 @@
         <button id="enh" title="CLAHE contrast, for looking only (E)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-contrast"/></svg></button>
         <svg class="ic dimic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sun"/></svg><input type="range" id="bright" min="-80" max="80" value="0"
                title="Brightness, for looking only">
+        <button id="loupebtn" title="Magnifier on or off (L)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-loupe"/></svg></button>
         <button id="keys" title="Keyboard shortcuts (?)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-keyboard"/></svg></button>
       </div>
     </div>
@@ -184,6 +186,7 @@
         <div><kbd>Del</kbd><span>remove selected box</span></div>
         <div><kbd>Esc</kbd><span>deselect</span></div>
         <div><kbd>Space</kbd><span>hold to pan</span></div>
+        <div><kbd>L</kbd><span>magnifier on or off</span></div>
         <div><kbd>drag</kbd><span>draw a box</span></div>
         <div><kbd>double-click</kbd><span>snap a box onto the target</span></div>
       </div>

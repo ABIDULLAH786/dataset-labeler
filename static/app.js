@@ -29,6 +29,7 @@ let draw_ = null, pan = null, grab = null, space = false;
 let enhance = false, dirty = false, busy = false;
 let gridMode = localStorage.getItem('dl-view') || 'grid';
 let bright = 0;
+let loupeOn = localStorage.getItem('dl-loupe') !== 'off';
 // Undo stack of whole box-lists. A frame holds a handful of boxes, so snapshotting the lot is
 // simpler and less error-prone than recording deltas, and the memory is nothing.
 let past = [], future = [];
@@ -724,7 +725,11 @@ function render() {
 
 function loupe(px, py) {
   const el = $('#loupe');
-  if (!img.complete || !iw || draw_ || grab) { el.style.display = 'none'; return; }
+  // Drawing and resizing are when magnification matters most: it is how you see where the
+  // target's edge actually is. It used to switch off here, and because mousemove returned
+  // before reaching this function it was not hidden either, so it froze in place over the
+  // thing being labelled.
+  if (!img.complete || !iw || !loupeOn) { el.style.display = 'none'; return; }
   const [ix, iy] = toImg(px, py), Z = 8, R = 210 / Z;
   const S = 214, GAP = 26;                      // 210 canvas + 2px border each side
   // Put the loupe in the quadrant opposite the cursor. Clamping it to the edge instead, which
@@ -742,11 +747,19 @@ function loupe(px, py) {
   if (bright) lctx.filter = `brightness(${100 + bright}%)`;
   lctx.drawImage(img, ix - R / 2, iy - R / 2, R, R, 0, 0, 210, 210);
   lctx.filter = 'none';
+  const ox = ix - R / 2, oy = iy - R / 2;
   boxes.forEach(b => {
     lctx.strokeStyle = colorOf(b[4]); lctx.lineWidth = 1;
-    lctx.strokeRect((b[0] - (ix - R / 2)) * Z, (b[1] - (iy - R / 2)) * Z,
-                    (b[2] - b[0]) * Z, (b[3] - b[1]) * Z);
+    lctx.strokeRect((b[0] - ox) * Z, (b[1] - oy) * Z, (b[2] - b[0]) * Z, (b[3] - b[1]) * Z);
   });
+  if (draw_) {                       // the box being dragged right now, magnified with it
+    const [ax, ay] = toImg(draw_.sx, draw_.sy), [bx, by] = toImg(draw_.cx, draw_.cy);
+    lctx.strokeStyle = colorOf(activeClass); lctx.lineWidth = 1.5;
+    lctx.setLineDash([4, 3]);
+    lctx.strokeRect((Math.min(ax, bx) - ox) * Z, (Math.min(ay, by) - oy) * Z,
+                    Math.abs(bx - ax) * Z, Math.abs(by - ay) * Z);
+    lctx.setLineDash([]);
+  }
   lctx.strokeStyle = 'rgba(224,174,0,.95)'; lctx.lineWidth = 1;
   lctx.beginPath();
   lctx.moveTo(105, 93); lctx.lineTo(105, 117);
@@ -812,7 +825,7 @@ stage.addEventListener('mousemove', e => {
       if (grab.h.includes('e')) x1 = lim(ix, iw);
       boxes[sel] = norm([x0, y0, x1, y1, s[4]]);
     }
-    dirty = true; renderBoxes(); render();
+    dirty = true; renderBoxes(); render(); loupe(px, py);
     return;
   }
 
@@ -820,7 +833,7 @@ stage.addEventListener('mousemove', e => {
     const [bx, by] = toScr(0, 0), [ex, ey] = toScr(iw, ih);
     draw_.cx = Math.min(Math.max(px, bx), ex);
     draw_.cy = Math.min(Math.max(py, by), ey);
-    render(); return;
+    render(); loupe(px, py); return;
   }
 
   const h = hitHandle(px, py);
@@ -1067,6 +1080,14 @@ $('#undo').onclick = undo;
 $('#redo').onclick = redo;
 $('#bright').oninput = e => { bright = +e.target.value; render(); };
 $('#bright').ondblclick = e => { bright = 0; e.target.value = 0; render(); };
+function setLoupe(on) {
+  loupeOn = on;
+  localStorage.setItem('dl-loupe', on ? 'on' : 'off');
+  $('#loupebtn').classList.toggle('on', on);
+  if (!on) $('#loupe').style.display = 'none';
+}
+$('#loupebtn').onclick = () => setLoupe(!loupeOn);
+
 $('#keys').onclick = () => $('#keysveil').classList.add('on');
 $('#keysclose').onclick = () => $('#keysveil').classList.remove('on');
 $('#keysveil').onclick = e => { if (e.target.id === 'keysveil') e.currentTarget.classList.remove('on'); };
@@ -1107,6 +1128,7 @@ document.addEventListener('keydown', e => {
   if (k === 'r' || k === 'R') { $('#reject').click(); return; }
   if (k === 'a' || k === 'A') { runAI(); return; }
   if (k === 'e' || k === 'E') { $('#enh').click(); return; }
+  if (k === 'l' || k === 'L') { setLoupe(!loupeOn); return; }
   if (k === 'f' || k === 'F') { fitView(); render(); syncZoom(); return; }
   if (k === 'Escape') { sel = -1; cands = []; renderBoxes(); renderCands(); render(); return; }
   if ((k === 'Delete' || k === 'Backspace') && sel >= 0) {
@@ -1136,6 +1158,7 @@ function prefetchNextPage() {
 
 (async () => {
   setMode(gridMode);
+  setLoupe(loupeOn);
   const s = await api('/api/state');
   base = s.base; root = s.root;
   $('#modelbadge').textContent = s.model ? 'model loaded' : 'imaging only';
