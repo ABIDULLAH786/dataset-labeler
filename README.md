@@ -23,16 +23,16 @@ single frame, and no detector will tell you which is which. A person with contra
 and an 8× loupe can often still tell, because they can use the trajectory, the context and the
 shape of the thing. The tool's job is to make that person fast, not to replace them.
 
-So three things here exist because of what those frames are:
+So these things here exist because of what those frames are:
 
 **Contrast on demand.** Many hard frames have the target in shade against a building, where the
 region averages 52 out of 255 and nothing is visible in the raw image. One key serves the frame
 through CLAHE and it appears. The enhancement is **for looking only** — the image on disk is
 never modified.
 
-**Snap.** Double-clicking near the target turns the click into a box that hugs whatever is
-actually there. Labels stay tight instead of carrying a lot of empty space, which matters when
-the target is 10 px wide and a hand-drawn box is 40.
+**Boxes only from a deliberate drag.** Clicks and double-clicks never create a label, so a fast
+pair of clicks can't drop a box somewhere random. A separate pan tool (or holding Ctrl) moves
+the view around without any risk of drawing.
 
 **Assisted candidates, not an oracle.** `A` runs a detection model, frame differencing and a
 local z-score, and lists what each found. They are suggestions to accept or ignore. The model is
@@ -277,11 +277,11 @@ There is a list view too, showing the same preview laid out across instead of st
 
 | | |
 |---|---|
-| **drag** | draw a box by hand, in the active class |
-| **double-click** | snap a box onto whatever is under the cursor |
-| **click a box** | select it — then drag to move, or pull a handle to resize |
+| **B** / **H** | switch between the box tool and the pan tool (also on the view bar) |
+| **drag** | box tool: draw a box in the active class. Pan tool: move the view |
+| **click a box** | select it — only a selected box can be dragged or resized. Dragging over an unselected box draws a new one; where boxes overlap, the click picks the smallest |
 | **wheel** | zoom at the cursor |
-| **space-drag**, middle-drag | pan |
+| **Ctrl-drag**, space-drag, middle-drag | pan, whichever tool is active |
 | **loupe** | follows the cursor at 8×, in the quadrant opposite it, so it never covers the target |
 
 A box is only created once the pointer has been dragged a few pixels. A bare click does nothing,

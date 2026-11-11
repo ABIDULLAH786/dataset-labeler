@@ -20,6 +20,8 @@
 <g id="i-contrast"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></g>
 <g id="i-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g>
 <g id="i-loupe"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/><path d="M11 8v6M8 11h6"/></g>
+<g id="i-box"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M12 9v6M9 12h6"/></g>
+<g id="i-hand"><path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L6 15"/></g>
 <g id="i-keyboard"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></g>
 <g id="i-grid"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></g>
 <g id="i-list"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></g>
@@ -113,6 +115,14 @@
   <div class="pane" id="a-left">
     <h2 class="ph">Frames <span class="n" id="fcount"></span></h2>
     <div id="frames"></div>
+    <div id="fpager">
+      <button class="pg" id="fp-first" title="First page">«</button>
+      <button class="pg" id="fp-prev" title="Previous page">‹</button>
+      <label title="Type a page number and press Enter">
+        <input type="number" id="fp-num" min="1" value="1"> <span id="fp-of">/ 1</span></label>
+      <button class="pg" id="fp-next" title="Next page">›</button>
+      <button class="pg" id="fp-last" title="Last page">»</button>
+    </div>
   </div>
 
   <div id="mid">
@@ -125,7 +135,7 @@
       <span class="sp"></span>
       <button class="btn" id="ai" title="Run the detectors (A)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-ai"/></svg>AI assist</button>
       <button class="btn" id="blank" title="Mark null - nothing in this frame (N)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-ban"/></svg>Mark null</button>
-      <button class="btn" id="reject" title="Reject this frame (R)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-x"/></svg>Reject</button>
+      <button class="btn" id="reject" title="Reject this frame (R)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-x"/></svg><span>Reject</span></button>
       <button class="btn pri" id="save" title="Save (S) - also saves on navigate"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"/></svg>Save</button>
       <button class="btn danger" id="del" title="Delete this frame entirely"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button>
     </div>
@@ -133,6 +143,9 @@
       <canvas id="cv"></canvas>
       <div id="loupe"><canvas id="lp" width="210" height="210"></canvas></div>
       <div id="viewbar">
+        <button id="t-draw" class="on" title="Box tool: drag to draw a box (B)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-box"/></svg></button>
+        <button id="t-pan" title="Pan tool: drag to move around the image (H, or hold Ctrl)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-hand"/></svg></button>
+        <span class="vsep"></span>
         <button id="z-out" title="Zoom out"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-minus"/></svg></button>
         <span id="zoomval" title="Click for 100%">100%</span>
         <button id="z-in" title="Zoom in"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus"/></svg></button>
@@ -185,10 +198,13 @@
         <div><kbd>Ctrl</kbd><kbd>⇧</kbd><kbd>Z</kbd><span>redo</span></div>
         <div><kbd>Del</kbd><span>remove selected box</span></div>
         <div><kbd>Esc</kbd><span>deselect</span></div>
+        <div><kbd>B</kbd><span>box tool: drag to draw</span></div>
+        <div><kbd>H</kbd><span>pan tool: drag to move around</span></div>
+        <div><kbd>Ctrl</kbd><span>hold to pan, with either tool</span></div>
         <div><kbd>Space</kbd><span>hold to pan</span></div>
         <div><kbd>L</kbd><span>magnifier on or off</span></div>
-        <div><kbd>drag</kbd><span>draw a box</span></div>
-        <div><kbd>double-click</kbd><span>snap a box onto the target</span></div>
+        <div><kbd>drag</kbd><span>draw a box (box tool only)</span></div>
+        <div><kbd>click</kbd><span>select a box - only then can it move</span></div>
       </div>
     </div>
     <div class="acts"><button class="btn pri" id="keysclose">Close</button></div>

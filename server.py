@@ -66,6 +66,17 @@ from pydantic import BaseModel
 HERE = Path(__file__).resolve().parent
 app = FastAPI(title="Dataset Labeler")
 
+
+# The page and its script must always be revalidated. Without a Cache-Control header the
+# browser cached app.js heuristically for hours, so after an update it ran the old script
+# under the new index.html. no-cache still lets the ETag answer 304, so reloads stay cheap.
+@app.middleware("http")
+async def revalidate_ui(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 BASE: Path = Path.home()          # the sandbox the browser may not climb out of
 ROOT: Path | None = None          # the folder currently being worked in
 MODEL_PATH: str | None = None

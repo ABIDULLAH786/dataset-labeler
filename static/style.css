@@ -223,6 +223,18 @@ button,input,select,textarea{font:inherit;color:inherit}
   font-weight:700}
 #pager i{color:var(--dim);font-style:normal;padding:0 2px}
 #pager .dim{margin-left:auto}
+#pager .goto{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--dim)}
+#pager .goto input,#fpager input{width:52px;padding:3px 5px;font-family:var(--mono);font-size:12px;
+  border:1px solid var(--line2);border-radius:var(--r);background:var(--panel);color:var(--fg)}
+
+/* page controls under the frame list, in the annotate view */
+#fpager{display:flex;align-items:center;justify-content:center;gap:4px;padding:8px 6px;flex:none;
+  border-top:1px solid var(--line);background:var(--panel)}
+#fpager .pg{padding:3px 8px}
+#fpager .pg:disabled{opacity:.4;cursor:default}
+#fpager label{display:flex;align-items:center;gap:4px;font-family:var(--mono);font-size:12px;
+  color:var(--dim);margin:0 2px}
+#fpager.hidden{display:none}
 
 /* ---------------------------------------------------------------- frames list */
 #frames{flex:1;overflow:auto;min-height:0}

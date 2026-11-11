@@ -20,6 +20,7 @@ let browsePath = null, browseSelf = null;
 let folder = null, folders = [], frames = [], cur = null;
 let status_ = 'all', page = 1, per = 60, query = '';
 let counts = {}, pages = 1, selected = new Set();
+let total = 0, pagePer = 60;                     // frames in the whole filtered list, page size
 let classes = [], activeClass = 0, classHi = 0;
 
 let img = new Image(), iw = 0, ih = 0;
@@ -87,11 +88,58 @@ function confirmDialog({title, body, okLabel = 'Delete', danger = true}) {
 }
 
 function setView(v) {
+  const prev = document.body.dataset.view;
   $$('.view').forEach(s => s.classList.remove('on'));
   $('#view-' + v).classList.add('on');
   document.body.dataset.view = v;
   if (v === 'annotate') requestAnimationFrame(() => { fitView(); render(); });
+  // Switching between gallery and annotate is a new history entry, so Back returns to it.
+  if (v === 'gallery' || v === 'annotate')
+    syncUrl(prev !== v && (prev === 'gallery' || prev === 'annotate'));
 }
+
+/* ---------------------------------------------------------------- address bar
+ * The URL carries where you are - view, folder, tab, page, open frame - so a reload (even a
+ * hard one) comes back to the same frame instead of the gallery:
+ *   #annotate?folder=1_fires&status=all&page=2&per=60&frame=f4_b1_00126.jpg          */
+let restoring = false;
+function syncUrl(push) {
+  if (!folder) return;
+  const view = document.body.dataset.view === 'annotate' ? 'annotate' : 'gallery';
+  const p = new URLSearchParams({folder, status: status_, page, per});
+  if (query) p.set('q', query);
+  if (view === 'annotate' && cur) p.set('frame', cur);
+  const url = `#${view}?${p}`;
+  if (location.hash === url) return;
+  history[push && !restoring ? 'pushState' : 'replaceState'](null, '', url);
+}
+
+async function restoreFromUrl() {
+  const [view, qs] = location.hash.slice(1).split('?');
+  const u = new URLSearchParams(qs || '');
+  restoring = true;
+  try {
+    if (dirty && cur) await save(true);
+    const want = folders.find(f => f.name === u.get('folder'));
+    folder = want ? want.name : folders[0].name;
+    status_ = STATUSES.some(s => s[0] === u.get('status')) ? u.get('status') : 'all';
+    per = +u.get('per') || per;
+    page = +u.get('page') || 1;
+    query = u.get('q') || '';
+    $('#search').value = query;
+    $('#per').value = String(per);
+    selected.clear();
+    renderFolders();
+    await loadFrames();
+    if (view === 'annotate' && frames.length) {
+      const f = frames.find(x => x.name === u.get('frame')) || frames[0];
+      await openFrame(f.name, true);
+    } else {
+      setView('gallery');
+    }
+  } finally { restoring = false; }
+}
+window.addEventListener('popstate', () => { if (folders.length) restoreFromUrl(); });
 
 const esc = s => String(s).replace(/[&<>"]/g, c =>
   ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
@@ -404,7 +452,9 @@ async function loadFrames() {
   const r = await api(`/api/frames?folder=${encodeURIComponent(folder)}&status=${status_}` +
                       `&page=${page}&per=${per}&q=${encodeURIComponent(query)}`);
   frames = r.items; counts = r.counts; pages = r.pages; page = r.page;
-  renderTabs(); renderGrid(); renderPager(); renderBatch();
+  total = r.total; pagePer = r.per;
+  syncUrl(false);
+  renderTabs(); renderGrid(); renderPager(); renderFramePager(); renderBatch();
   // the next page's pictures are fetched while this one is being looked at, so paging forward
   // lands on images the browser already has
   clearTimeout(window._pf); window._pf = setTimeout(prefetchNextPage, 900);
@@ -477,11 +527,47 @@ function renderPager() {
     near.join('') +
     (page < pages - 2 ? '<i>…</i>' + btn(pages, pages, false) : '') +
     btn(Math.min(pages, page + 1), 'next ›', false) +
+    `<label class="goto">go to <input type="number" min="1" max="${pages}" value="${page}"></label>` +
     `<span class="dim">page ${page} of ${pages}</span>`;
   $('#pager').querySelectorAll('.pg').forEach(b => b.onclick = () => {
     page = +b.dataset.p; loadFrames();
   });
+  $('#pager .goto input').onkeydown = e => {
+    if (e.key !== 'Enter') return;
+    const p = clampPage(e.target.value);
+    if (p !== page) { page = p; loadFrames(); }
+  };
 }
+
+const clampPage = v => Math.max(1, Math.min(pages, Math.round(+v) || 1));
+
+// The page controls under the frame list in the annotate view.
+function renderFramePager() {
+  $('#fpager').classList.toggle('hidden', pages <= 1);
+  $('#fp-num').value = page; $('#fp-num').max = pages;
+  $('#fp-of').textContent = `/ ${pages}`;
+  $('#fp-first').disabled = $('#fp-prev').disabled = page <= 1;
+  $('#fp-next').disabled = $('#fp-last').disabled = page >= pages;
+}
+
+// Jump to another page while annotating: save the open frame, then open the first frame there.
+async function gotoPage(p, openLast) {
+  p = clampPage(p);
+  if (p === page || stepping) { renderFramePager(); return; }
+  stepping = true;
+  try {
+    if (dirty && cur) await save(true);
+    page = p;
+    await loadFrames();
+    if (frames.length) await openFrame(frames[openLast ? frames.length - 1 : 0].name, true);
+  } finally { stepping = false; }
+}
+$('#fp-first').onclick = () => gotoPage(1);
+$('#fp-prev').onclick = () => gotoPage(page - 1);
+$('#fp-next').onclick = () => gotoPage(page + 1);
+$('#fp-last').onclick = () => gotoPage(pages);
+$('#fp-num').onkeydown = e => { if (e.key === 'Enter') { gotoPage(e.target.value); e.target.blur(); } };
+$('#fp-num').onblur = e => { e.target.value = page; };
 
 function renderBatch() {
   const n = selected.size;
@@ -590,9 +676,12 @@ async function openFrame(name, skipSave) {
   sel = -1; cands = []; candHi = -1; dirty = false;
   past = []; future = []; syncUndo();
   $('#title').textContent = `${name}  ${iw}×${ih}`;
-  $('#reject').classList.toggle('on', !!d.rejected);
+  showRejected(!!d.rejected);
   const i = frames.findIndex(f => f.name === name);
-  $('#pos').textContent = i >= 0 ? `${i + 1} / ${frames.length}` : '';
+  // position on this page, then in the whole list: "1 / 60 · 61 / 2000"
+  $('#pos').textContent = i >= 0
+    ? `${i + 1} / ${frames.length} · ${(page - 1) * pagePer + i + 1} / ${total}` : '';
+  $('#pos').title = i >= 0 ? `Page ${page} of ${pages}` : '';
   $('#cands').innerHTML = '<div class="empty">Press <b>A</b> to run the detectors.</div>';
   renderBoxes();
   img = new Image();
@@ -605,14 +694,20 @@ function imgUrl(name) {
          (enhance ? '&enhance=1' : '') + `&t=${Date.now()}`;
 }
 
-function step(delta) {
+let stepping = false;
+async function step(delta) {
+  if (stepping) return;                          // a held arrow key must not skip pages
   const i = frames.findIndex(f => f.name === cur);
   const j = i + delta;
-  if (j < 0 || j >= frames.length) {
-    toast(delta > 0 ? 'Last frame on this page' : 'First frame on this page');
+  if (j >= 0 && j < frames.length) { openFrame(frames[j].name); return; }
+
+  // Off the end of this page: carry on into the next (or previous) one.
+  const to = page + (delta > 0 ? 1 : -1);
+  if (to < 1 || to > pages) {
+    toast(delta > 0 ? 'Last frame' : 'First frame');
     return;
   }
-  openFrame(frames[j].name);
+  await gotoPage(to, delta < 0);
 }
 
 function stageSize() { const r = $('#stage').getBoundingClientRect(); return [r.width, r.height]; }
@@ -775,33 +870,57 @@ const stage = $('#stage');
 // small box behind every time. Anything that starts on a control is not a drawing gesture.
 const onChrome = e => !!(e.target.closest && e.target.closest('#viewbar'));
 
+// Two tools: 'draw' makes boxes, 'pan' moves the view. Holding Ctrl or Space pans with either
+// one, and the middle button always pans.
+let tool = 'draw';
+const panning = e => tool === 'pan' || space || !!(e && (e.ctrlKey || e.metaKey));
+function idleCursor(e) { stage.style.cursor = panning(e) ? 'grab' : 'crosshair'; }
+function setTool(t) {
+  tool = t;
+  $('#t-draw').classList.toggle('on', t === 'draw');
+  $('#t-pan').classList.toggle('on', t === 'pan');
+  idleCursor();
+}
+$('#t-draw').onclick = () => setTool('draw');
+$('#t-pan').onclick = () => setTool('pan');
+
 stage.addEventListener('mousedown', e => {
   if (busy || onChrome(e)) return;
+  const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  if (e.button === 1 || (e.button === 0 && panning(e))) {
+    pan = {x: px, y: py}; stage.style.cursor = 'grabbing'; e.preventDefault(); return;
+  }
+  if (e.button !== 0) return;
   if (!classes.length) {
     toast('Create a class first - every box has to say what it is', 'err');
     $('#classfilter').focus();
     return;
   }
-  const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
-  if (e.button === 1 || space) { pan = {x: px, y: py}; e.preventDefault(); return; }
-  if (e.button !== 0) return;
 
   const h = hitHandle(px, py);
   if (h) { remember(); grab = {mode: 'resize', h, start: boxes[sel].slice()}; return; }
 
+  // Only the selected box can be moved. An unselected box is inert: dragging over it draws a
+  // new box, so a drone right beside one already labelled can still be boxed. Picking a box
+  // up straight away used to drag the old label onto the neighbour instead.
   const [ix, iy] = toImg(px, py);
-  const hit = boxes.findIndex(b =>
-    ix >= b[0] - 3 && ix <= b[2] + 3 && iy >= b[1] - 3 && iy <= b[3] + 3);
-  if (hit >= 0) {
-    sel = hit; classHi = boxes[hit][4];
-    renderBoxes(); renderClassList(); render();
+  if (sel >= 0 && boxAt(ix, iy).includes(sel)) {
     remember();
     grab = {mode: 'move', ox: ix, oy: iy, start: boxes[sel].slice()};
     return;
   }
-  sel = -1; renderBoxes();
-  draw_ = {sx: px, sy: py, cx: px, cy: py};
+  draw_ = {sx: px, sy: py, cx: px, cy: py, ix, iy};
 });
+
+// Indices of the boxes under an image point, smallest first: where boxes overlap, the small
+// one is almost always the one being aimed at.
+function boxAt(ix, iy) {
+  return boxes.map((b, i) => i)
+    .filter(i => { const b = boxes[i];
+      return ix >= b[0] - 3 && ix <= b[2] + 3 && iy >= b[1] - 3 && iy <= b[3] + 3; })
+    .sort((a, b) => (boxes[a][2] - boxes[a][0]) * (boxes[a][3] - boxes[a][1])
+                  - (boxes[b][2] - boxes[b][0]) * (boxes[b][3] - boxes[b][1]));
+}
 
 stage.addEventListener('mousemove', e => {
   if (onChrome(e) && !draw_ && !grab && !pan) { $('#loupe').style.display = 'none'; return; }
@@ -840,11 +959,11 @@ stage.addEventListener('mousemove', e => {
   if (h) stage.style.cursor = (h === 'n' || h === 's') ? 'ns-resize' :
                               (h === 'e' || h === 'w') ? 'ew-resize' :
                               (h === 'nw' || h === 'se') ? 'nwse-resize' : 'nesw-resize';
-  else if (space) stage.style.cursor = 'grab';
+  else if (panning(e)) stage.style.cursor = 'grab';
   else {
     const [ix, iy] = toImg(px, py);
-    const over = boxes.some(b => ix >= b[0] && ix <= b[2] && iy >= b[1] && iy <= b[3]);
-    stage.style.cursor = over ? 'move' : 'crosshair';
+    const overSel = sel >= 0 && boxAt(ix, iy).includes(sel);
+    stage.style.cursor = overSel ? 'move' : 'crosshair';
   }
   loupe(px, py);
 });
@@ -852,7 +971,7 @@ stage.addEventListener('mousemove', e => {
 stage.addEventListener('mouseleave', () => { $('#loupe').style.display = 'none'; });
 
 stage.addEventListener('mouseup', async e => {
-  if (pan) { pan = null; return; }
+  if (pan) { pan = null; idleCursor(e); return; }
   if (grab) { grab = null; boxes[sel] = clampBox(norm(boxes[sel])); renderBoxes(); render(); return; }
   if (!draw_) return;
 
@@ -873,30 +992,17 @@ stage.addEventListener('mouseup', async e => {
     sel = boxes.length - 1; dirty = true;
     renderBoxes(); render();
   } else {
-    render();                       // just a click: clear the rubber band, leave nothing behind
+    // Just a click: select the box under it (the smallest, where they overlap), or deselect
+    // on empty image. Never creates anything.
+    const hit = boxAt(d.ix, d.iy)[0];
+    sel = hit === undefined ? -1 : hit;
+    if (sel >= 0) { classHi = boxes[sel][4]; renderClassList(); }
+    renderBoxes(); render();
   }
 });
 
-/* Snap kept its reason to exist - a 10 px target is far easier to click than to drag a tight
- * box around - but it answers to a double-click now, so an ordinary click cannot create one. */
-stage.addEventListener('dblclick', async e => {
-  if (busy || onChrome(e) || !classes.length) return;
-  const r = cv.getBoundingClientRect();
-  const [ix, iy] = toImg(e.clientX - r.left, e.clientY - r.top);
-  busy = true;
-  try {
-    const res = await post('/api/snap', {folder, name: cur, x: ix, y: iy, rad: 70});
-    if (res.box) {
-      remember();
-      boxes.push([res.box[0], res.box[1], res.box[2], res.box[3], activeClass]);
-      sel = boxes.length - 1; dirty = true;
-      toast(`Snapped ${Math.round(res.box[2] - res.box[0])}×${Math.round(res.box[3] - res.box[1])}`
-            + ` px as ${nameOf(activeClass)}`, 'ok');
-    } else toast('Nothing found there - drag to draw by hand', 'err');
-  } catch (err) { toast('Snap failed: ' + err.message, 'err'); }
-  busy = false;
-  renderBoxes(); render();
-});
+/* No double-click snap: a box only ever comes from a deliberate drag. Snapping on double-click
+ * dropped boxes onto whatever was near a fast pair of clicks. */
 
 stage.addEventListener('wheel', e => {
   e.preventDefault();
@@ -1032,10 +1138,16 @@ $('#enh').onclick = () => {
 $('#blank').onclick = async () => {
   remember(); boxes = []; sel = -1; dirty = true; renderBoxes(); render(); await save();
 };
+// The button says what the frame IS once rejected, not only by its colour.
+function showRejected(on) {
+  $('#reject').classList.toggle('on', on);
+  $('#reject span').textContent = on ? 'Rejected' : 'Reject';
+  $('#reject').title = on ? 'This frame is rejected - click to un-reject (R)' : 'Reject this frame (R)';
+}
 $('#reject').onclick = async () => {
   const on = $('#reject').classList.contains('on');
   await post('/api/status', {folder, names: [cur], status: on ? 'unrejected' : 'rejected'});
-  $('#reject').classList.toggle('on', !on);
+  showRejected(!on);
   const f = frames.find(x => x.name === cur);
   if (f) { f.status = on ? (f.boxes ? 'annotated' : 'unassigned') : 'rejected'; renderFrameList(); }
   toast(on ? 'Un-rejected' : 'Rejected', 'ok');
@@ -1100,8 +1212,19 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape') setView('gallery');
     return;
   }
-  if (e.code === 'Space') { space = true; e.preventDefault(); return; }
+  if (e.code === 'Space') { space = true; idleCursor(e); e.preventDefault(); return; }
+  if (e.key === 'Control' || e.key === 'Meta') { if (!draw_ && !grab) idleCursor(e); return; }
   const k = e.key;
+  if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'Z')) {
+    e.preventDefault(); e.shiftKey ? redo() : undo(); return;
+  }
+  if ((e.ctrlKey || e.metaKey) && (k === 'y' || k === 'Y')) { e.preventDefault(); redo(); return; }
+  if ((e.ctrlKey || e.metaKey) && (k === 's' || k === 'S')) { e.preventDefault(); save(); return; }
+  // Every other shortcut is a bare key. With Ctrl, Alt or Cmd held the key belongs to the
+  // browser: Ctrl+Shift+R (hard reload) used to reject the open frame on its way out.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (k === 'b' || k === 'B') { setTool('draw'); return; }
+  if (k === 'h' || k === 'H') { setTool('pan'); return; }
 
   if (k === 'ArrowRight' || k === 'd' || k === 'D') { step(1); return; }
   if (k === 'ArrowLeft') { step(-1); return; }
@@ -1119,10 +1242,6 @@ document.addEventListener('keydown', e => {
   if (k === '0') { fitView(); render(); syncZoom(); return; }
   if (k === '1') { zoomTo(1); return; }
   if (k === '?') { $('#keysveil').classList.toggle('on'); return; }
-  if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'Z')) {
-    e.preventDefault(); e.shiftKey ? redo() : undo(); return;
-  }
-  if ((e.ctrlKey || e.metaKey) && (k === 'y' || k === 'Y')) { e.preventDefault(); redo(); return; }
   if (k === 's' || k === 'S') { save(); return; }
   if (k === 'n' || k === 'N') { $('#blank').click(); return; }
   if (k === 'r' || k === 'R') { $('#reject').click(); return; }
@@ -1138,7 +1257,8 @@ document.addEventListener('keydown', e => {
   }
 });
 document.addEventListener('keyup', e => {
-  if (e.code === 'Space') { space = false; stage.style.cursor = 'crosshair'; }
+  if (e.code === 'Space') space = false;
+  if (e.code === 'Space' || e.key === 'Control' || e.key === 'Meta') { if (!pan) idleCursor(e); }
 });
 window.addEventListener('resize', () => {
   if (document.body.dataset.view === 'annotate') { render(); }
@@ -1168,7 +1288,7 @@ function prefetchNextPage() {
     folders = await api('/api/folders');
     await loadClasses();
     renderFolders();
-    if (folders.length) await selectFolder(folders[0].name);
+    if (folders.length) await restoreFromUrl();
     else { toast('No images under that folder — pick another', 'err'); openBrowse(root); }
   } else {
     openBrowse(base);
