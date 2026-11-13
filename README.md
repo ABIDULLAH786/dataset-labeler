@@ -282,7 +282,7 @@ There is a list view too, showing the same preview laid out across instead of st
 | **click a box** | select it — only a selected box can be dragged or resized. Dragging over an unselected box draws a new one; where boxes overlap, the click picks the smallest |
 | **wheel** | zoom at the cursor |
 | **Ctrl-drag**, space-drag, middle-drag | pan, whichever tool is active |
-| **loupe** | follows the cursor at 8×, in the quadrant opposite it, so it never covers the target |
+| **loupe** | follows the cursor at 8× (100%), in the quadrant opposite it, so it never covers the target. The picker beside its button, or `[` and `]`, sets 75%, 50% or 25% (6×, 4×, 2×) for a wider, less enlarged view |
 
 A box is only created once the pointer has been dragged a few pixels. A bare click does nothing,
 so a stray click on the picture cannot leave a label behind.

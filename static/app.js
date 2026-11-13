@@ -31,6 +31,12 @@ let enhance = false, dirty = false, busy = false;
 let gridMode = localStorage.getItem('dl-view') || 'grid';
 let bright = 0;
 let loupeOn = localStorage.getItem('dl-loupe') !== 'off';
+// Magnifier strength. 100% is the full 8x; 75/50/25% are 6x/4x/2x, wider and less enlarged.
+const LOUPE_MAX = 8, LOUPE_STEPS = [25, 50, 75, 100];
+let loupePct = (() => {
+  try { const v = +localStorage.getItem('dl-loupe-pct'); return LOUPE_STEPS.includes(v) ? v : 100; }
+  catch { return 100; }
+})();
 // Undo stack of whole box-lists. A frame holds a handful of boxes, so snapshotting the lot is
 // simpler and less error-prone than recording deltas, and the memory is nothing.
 let past = [], future = [];
@@ -825,7 +831,7 @@ function loupe(px, py) {
   // before reaching this function it was not hidden either, so it froze in place over the
   // thing being labelled.
   if (!img.complete || !iw || !loupeOn) { el.style.display = 'none'; return; }
-  const [ix, iy] = toImg(px, py), Z = 8, R = 210 / Z;
+  const [ix, iy] = toImg(px, py), Z = LOUPE_MAX * loupePct / 100, R = 210 / Z;
   const S = 214, GAP = 26;                      // 210 canvas + 2px border each side
   // Put the loupe in the quadrant opposite the cursor. Clamping it to the edge instead, which
   // is what it used to do, parked it exactly over the corner of a full-size image - the one
@@ -1200,6 +1206,15 @@ function setLoupe(on) {
 }
 $('#loupebtn').onclick = () => setLoupe(!loupeOn);
 
+function setLoupePct(p) {
+  loupePct = p;
+  try { localStorage.setItem('dl-loupe-pct', p); } catch {}
+  $('#loupepct').value = String(p);
+  if (!loupeOn) setLoupe(true);           // picking a strength means you want to see it
+}
+$('#loupepct').value = String(loupePct);
+$('#loupepct').onchange = e => { setLoupePct(+e.target.value); e.target.blur(); };
+
 $('#keys').onclick = () => $('#keysveil').classList.add('on');
 $('#keysclose').onclick = () => $('#keysveil').classList.remove('on');
 $('#keysveil').onclick = e => { if (e.target.id === 'keysveil') e.currentTarget.classList.remove('on'); };
@@ -1248,6 +1263,13 @@ document.addEventListener('keydown', e => {
   if (k === 'a' || k === 'A') { runAI(); return; }
   if (k === 'e' || k === 'E') { $('#enh').click(); return; }
   if (k === 'l' || k === 'L') { setLoupe(!loupeOn); return; }
+  if (k === '[' || k === ']') {                  // magnifier weaker / stronger
+    const i = LOUPE_STEPS.indexOf(loupePct) + (k === ']' ? 1 : -1);
+    if (i >= 0 && i < LOUPE_STEPS.length) {
+      setLoupePct(LOUPE_STEPS[i]); toast(`Magnifier ${loupePct}%`);
+    }
+    return;
+  }
   if (k === 'f' || k === 'F') { fitView(); render(); syncZoom(); return; }
   if (k === 'Escape') { sel = -1; cands = []; renderBoxes(); renderCands(); render(); return; }
   if ((k === 'Delete' || k === 'Backspace') && sel >= 0) {
