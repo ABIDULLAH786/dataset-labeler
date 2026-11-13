@@ -796,9 +796,9 @@ function render() {
     const [x0, y0] = toScr(b[0], b[1]), [x1, y1] = toScr(b[2], b[3]);
     const col = colorOf(b[4]);
     ctx.strokeStyle = i === sel ? '#1b2230' : col;
-    ctx.lineWidth = i === sel ? 2 : 1.5;
+    ctx.lineWidth = i === sel ? 3 : 2.5;           // bold enough to read on any background
     ctx.strokeRect(x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4);
-    ctx.font = '11px ui-monospace,monospace';
+    ctx.font = 'bold 11px ui-monospace,monospace';
     const tag = `${nameOf(b[4])} ${Math.round(b[2] - b[0])}×${Math.round(b[3] - b[1])}`;
     const tw = ctx.measureText(tag).width + 6;
     ctx.fillStyle = col;
@@ -822,6 +822,29 @@ function render() {
     ctx.strokeRect(draw_.sx, draw_.sy, draw_.cx - draw_.sx, draw_.cy - draw_.sy);
     ctx.setLineDash([]);
   }
+  drawGuides();
+}
+
+// Dashed guide lines through the cursor, across the whole image, so it is clear where a box's
+// edge will start. Two-tone dashes - light, with a faint dark gap - stay visible on sky and on
+// shadow alike without being heavy. Only with the box tool, and not while panning or moving.
+function drawGuides() {
+  if (!hover || hover.pan || pan || grab || tool !== 'draw') return;
+  const [bx, by] = toScr(0, 0), [ex, ey] = toScr(iw, ih);
+  if (hover.x < bx || hover.x > ex || hover.y < by || hover.y > ey) return;   // off the image
+  const x = Math.round(hover.x) + .5, y = Math.round(hover.y) + .5;          // crisp 1px lines
+  const line = () => {
+    ctx.beginPath();
+    ctx.moveTo(x, Math.max(by, 0)); ctx.lineTo(x, Math.min(ey, cv.height));
+    ctx.moveTo(Math.max(bx, 0), y); ctx.lineTo(Math.min(ex, cv.width), y);
+    ctx.stroke();
+  };
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 6]); ctx.lineDashOffset = -6;          // faint dark, in the light gaps
+  ctx.strokeStyle = 'rgba(0,0,0,.18)'; line();
+  ctx.setLineDash([6, 4]); ctx.lineDashOffset = 0;           // light dashes
+  ctx.strokeStyle = 'rgba(255,255,255,.7)'; line();
+  ctx.setLineDash([]); ctx.lineDashOffset = 0;
 }
 
 function loupe(px, py) {
@@ -850,7 +873,7 @@ function loupe(px, py) {
   lctx.filter = 'none';
   const ox = ix - R / 2, oy = iy - R / 2;
   boxes.forEach(b => {
-    lctx.strokeStyle = colorOf(b[4]); lctx.lineWidth = 1;
+    lctx.strokeStyle = colorOf(b[4]); lctx.lineWidth = 2;
     lctx.strokeRect((b[0] - ox) * Z, (b[1] - oy) * Z, (b[2] - b[0]) * Z, (b[3] - b[1]) * Z);
   });
   if (draw_) {                       // the box being dragged right now, magnified with it
@@ -879,8 +902,12 @@ const onChrome = e => !!(e.target.closest && e.target.closest('#viewbar'));
 // Two tools: 'draw' makes boxes, 'pan' moves the view. Holding Ctrl or Space pans with either
 // one, and the middle button always pans.
 let tool = 'draw';
+let hover = null;                                // last pointer position on the stage, for guides
 const panning = e => tool === 'pan' || space || !!(e && (e.ctrlKey || e.metaKey));
-function idleCursor(e) { stage.style.cursor = panning(e) ? 'grab' : 'crosshair'; }
+function idleCursor(e) {
+  stage.style.cursor = panning(e) ? 'grab' : 'crosshair';
+  if (hover) { hover.pan = panning(e); render(); }   // guides hide while Ctrl/Space pans
+}
 function setTool(t) {
   tool = t;
   $('#t-draw').classList.toggle('on', t === 'draw');
@@ -929,8 +956,13 @@ function boxAt(ix, iy) {
 }
 
 stage.addEventListener('mousemove', e => {
-  if (onChrome(e) && !draw_ && !grab && !pan) { $('#loupe').style.display = 'none'; return; }
+  if (onChrome(e) && !draw_ && !grab && !pan) {
+    $('#loupe').style.display = 'none';
+    if (hover) { hover = null; render(); }        // no guides over the view bar
+    return;
+  }
   const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  hover = {x: px, y: py, pan: panning(e)};
 
   if (pan) {
     viewport.x += px - pan.x; viewport.y += py - pan.y;
@@ -971,10 +1003,14 @@ stage.addEventListener('mousemove', e => {
     const overSel = sel >= 0 && boxAt(ix, iy).includes(sel);
     stage.style.cursor = overSel ? 'move' : 'crosshair';
   }
+  render();                                        // move the guide lines with the cursor
   loupe(px, py);
 });
 
-stage.addEventListener('mouseleave', () => { $('#loupe').style.display = 'none'; });
+stage.addEventListener('mouseleave', () => {
+  $('#loupe').style.display = 'none';
+  if (hover) { hover = null; render(); }
+});
 
 stage.addEventListener('mouseup', async e => {
   if (pan) { pan = null; idleCursor(e); return; }
