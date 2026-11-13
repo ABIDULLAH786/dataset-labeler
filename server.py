@@ -38,6 +38,9 @@ STATE. A frame is in exactly one of these, which is what the gallery tabs filter
     annotated    a label file with at least one box
     null         a label file that is empty - verified as having nothing in it
     rejected     listed in .labeller/rejected.txt - unusable frame, excluded from export
+    deleted      listed in .labeller/deleted.json with the time it was deleted. A soft delete:
+                 the image and its label stay where they are, so restoring puts the frame back
+                 exactly as it was. Only "delete forever" from the Deleted tab removes files.
 
 Usage:
   ./server.py                                  browse from your home directory
@@ -235,6 +238,33 @@ def rejected_set(d: Path) -> set:
 def write_rejected(d: Path, names: set):
     f = side_file(d, "rejected.txt", make=True)
     f.write_text("".join(sorted(n + "\n" for n in names)))
+
+
+def deleted_map(d: Path) -> dict:
+    """{frame name: unix time it was deleted}. Kept apart from the scan cache on purpose:
+    the frame's own status (annotated, null...) is unchanged by deleting it, and is what a
+    restore brings back."""
+    f = side_file(d, "deleted.json")
+    try:
+        data = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for k, v in data.items():
+        try:
+            out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def write_deleted(d: Path, m: dict):
+    f = side_file(d, "deleted.json", make=True)
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps(m, indent=0, sort_keys=True))
+    os.replace(tmp, f)                 # never leave a half-written list behind
 
 
 # ---------------------------------------------------------------- classes
@@ -632,9 +662,10 @@ def folders():
             return
         seen.add(d)
         rel = "." if d == root else d.relative_to(root).as_posix()
-        counts = {"unassigned": 0, "annotated": 0, "null": 0, "rejected": 0}
-        for _, _, _, _, st in scan_frames(d):
-            counts[st] += 1
+        counts = {"unassigned": 0, "annotated": 0, "null": 0, "rejected": 0, "deleted": 0}
+        dm = deleted_map(d)
+        for name, _, _, _, st in scan_frames(d):
+            counts["deleted" if name in dm else st] += 1
         out.append({"name": rel, "count": info["images"], "layout": info["layout"], **counts})
 
     # images/ is half of its parent's layout, not a folder in its own right. Listing it
@@ -784,29 +815,48 @@ def set_classes(req: ClassReq):
 
 
 @app.get("/api/frames")
-def frames(folder: str, status: str = "all", page: int = 1, per: int = 60, q: str = ""):
+def frames(folder: str, status: str = "all", page: int = 1, per: int = 60, q: str = "",
+           was: str = ""):
+    """
+    One page of a tab. The Deleted tab is ordered most recently deleted first, and `was`
+    narrows it to frames that were in a given state before they were deleted.
+    """
     d = folder_dir(folder)
     notes = {}
     f = d / "REVIEW.csv"
     if f.exists():
         for r in csv.DictReader(open(f, encoding="utf-8-sig")):
             notes[r.get("image", "")] = r.get("note", "")
-    items, counts = [], {"all": 0, "unassigned": 0, "annotated": 0, "null": 0, "rejected": 0}
+    dm = deleted_map(d)
+    items = []
+    counts = {"all": 0, "unassigned": 0, "annotated": 0, "null": 0, "rejected": 0, "deleted": 0}
+    was_counts = {"unassigned": 0, "annotated": 0, "null": 0, "rejected": 0}
     needle = q.strip().lower()
-    for name, _has, n, cls, st in scan_frames(d):
+    for name, _has, n, cls, base in scan_frames(d):
+        st = "deleted" if name in dm else base
         counts[st] += 1
         counts["all"] += 1
+        if st == "deleted":
+            was_counts[base] += 1
         if needle and needle not in name.lower():
             continue
         if status not in ("all", st):
             continue
-        items.append({"name": name, "n": frame_no(name), "boxes": n, "status": st,
-                      "classes": sorted(cls), "note": notes.get(name, "")})
+        if was and st == "deleted" and base != was:
+            continue
+        item = {"name": name, "n": frame_no(name), "boxes": n, "status": st,
+                "classes": sorted(cls), "note": notes.get(name, "")}
+        if st == "deleted":
+            item.update(was=base, deleted_at=dm[name])
+        items.append(item)
+    if status == "deleted":
+        items.sort(key=lambda it: -it["deleted_at"])          # newest first; stable within
     per = max(1, min(400, per))
     pages = max(1, (len(items) + per - 1) // per)
     page = max(1, min(page, pages))
     return {"total": len(items), "page": page, "pages": pages, "per": per,
-            "counts": counts, "items": items[(page - 1) * per: page * per]}
+            "counts": counts, "was_counts": was_counts,
+            "items": items[(page - 1) * per: page * per]}
 
 
 def hex_bgr(h: str):
@@ -891,7 +941,8 @@ def get_label(folder: str, name: str):
     h, w = im.shape[:2]
     lp = label_dir(d) / (Path(name).stem + ".txt")
     return {"w": int(w), "h": int(h), "boxes": read_boxes(lp, w, h),
-            "has_label": lp.exists(), "rejected": name in rejected_set(d)}
+            "has_label": lp.exists(), "rejected": name in rejected_set(d),
+            "deleted": name in deleted_map(d)}
 
 
 class SaveReq(BaseModel):
@@ -953,15 +1004,61 @@ def set_status(req: StatusReq):
 
 class DelReq(BaseModel):
     folder: str
-    names: list
+    names: list = []
+    all_deleted: bool = False          # act on everything in the Deleted tab...
+    was: str = ""                      # ...narrowed the same way the tab is filtered
+    q: str = ""
+
+
+def deleted_names(d: Path, req: "DelReq") -> list:
+    """The names a request means: its own list, or the whole (filtered) Deleted tab."""
+    dm = deleted_map(d)
+    if not req.all_deleted:
+        return list(req.names)
+    needle = req.q.strip().lower()
+    base = {name: st for name, _, _, _, st in scan_frames(d)}
+    return [n for n in dm
+            if (not req.was or base.get(n) == req.was)
+            and (not needle or needle in n.lower())]
+
+
+@app.post("/api/trash")
+def trash_frames(req: DelReq):
+    """Soft delete: mark the frames deleted. Nothing on disk is touched."""
+    d = folder_dir(req.folder)
+    dm = deleted_map(d)
+    now = time.time()
+    moved = 0
+    for name in req.names:
+        if name in dm or not (image_dir(d) / name).exists():
+            continue
+        dm[name] = now
+        moved += 1
+    write_deleted(d, dm)
+    return {"ok": True, "moved": moved}
+
+
+@app.post("/api/untrash")
+def untrash_frames(req: DelReq):
+    """Restore: the frame goes back to whatever state it was in before it was deleted."""
+    d = folder_dir(req.folder)
+    names = deleted_names(d, req)
+    dm = deleted_map(d)
+    restored = sum(1 for n in names if dm.pop(n, None) is not None)
+    write_deleted(d, dm)
+    return {"ok": True, "restored": restored}
 
 
 @app.post("/api/delete")
 def delete_frames(req: DelReq):
+    """Delete forever: removes the image, its label and annotated/crops copies from disk."""
     d = folder_dir(req.folder)
     ld = label_dir(d)
+    req.names = deleted_names(d, req)
+    dm = deleted_map(d)
     removed = 0
     for name in req.names:
+        dm.pop(name, None)
         stem = Path(name).stem
         for p in (image_dir(d) / name, ld / (stem + ".txt"),
                   d / "annotated" / name, d / "crops" / name):
@@ -979,6 +1076,7 @@ def delete_frames(req: DelReq):
     forget_scan(d)
     rj = rejected_set(d) - set(req.names)
     write_rejected(d, rj)
+    write_deleted(d, dm)
     return {"ok": True, "removed": removed}
 
 

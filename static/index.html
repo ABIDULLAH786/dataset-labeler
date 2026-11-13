@@ -101,8 +101,19 @@
       <button class="btn" id="b-reject">Reject</button>
       <button class="btn" id="b-restore">Un-reject</button>
       <button class="btn" id="b-clear">Clear labels</button>
-      <button class="btn danger" id="b-del">Delete</button>
+      <button class="btn danger" id="b-del" title="Move to the Deleted tab - can be restored">Delete</button>
+      <button class="btn" id="b-untrash" title="Put back where they were">Restore</button>
+      <button class="btn destroy" id="b-purge" title="Remove from disk - cannot be undone">Delete forever</button>
       <button class="btn" id="b-none">Clear selection</button>
+    </div>
+
+    <div id="trashbar" class="hidden">
+      <span class="tnote">Deleted frames are still on disk. <b>Restore</b> puts a frame back as it was;
+        <b>Delete forever</b> removes it.</span>
+      <span class="sp"></span>
+      <select id="wasf" class="inp" title="Show only frames that were in this state before deletion"></select>
+      <button class="btn" id="t-restore-all">Restore all</button>
+      <button class="btn destroy" id="t-empty">Delete all forever</button>
     </div>
 
     <div id="grid"></div>
@@ -137,10 +148,11 @@
       <button class="btn" id="blank" title="Mark null - nothing in this frame (N)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-ban"/></svg>Mark null</button>
       <button class="btn" id="reject" title="Reject this frame (R)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-x"/></svg><span>Reject</span></button>
       <button class="btn pri" id="save" title="Save (S) - also saves on navigate"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-check"/></svg>Save</button>
-      <button class="btn danger" id="del" title="Delete this frame entirely"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button>
+      <button class="btn danger" id="del" title="Move this frame to the Deleted tab (Del) - it can be restored from there"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"/></svg><span>Delete</span></button>
     </div>
     <div id="stage">
       <canvas id="cv"></canvas>
+      <div id="boxmenu" role="menu" hidden></div>
       <div id="loupe"><canvas id="lp" width="210" height="210"></canvas></div>
       <div id="viewbar">
         <button id="t-draw" class="on" title="Box tool: drag to draw a box (B)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-box"/></svg></button>
@@ -201,6 +213,7 @@
         <div><kbd>Ctrl</kbd><kbd>Z</kbd><span>undo</span></div>
         <div><kbd>Ctrl</kbd><kbd>⇧</kbd><kbd>Z</kbd><span>redo</span></div>
         <div><kbd>Del</kbd><span>remove selected box</span></div>
+        <div><kbd>Del</kbd><span>no box selected: move the frame to Deleted</span></div>
         <div><kbd>Esc</kbd><span>deselect</span></div>
         <div><kbd>B</kbd><span>box tool: drag to draw</span></div>
         <div><kbd>H</kbd><span>pan tool: drag to move around</span></div>
@@ -210,6 +223,7 @@
         <div><kbd>[</kbd><kbd>]</kbd><span>magnifier 25 / 50 / 75 / 100%</span></div>
         <div><kbd>drag</kbd><span>draw a box (box tool only)</span></div>
         <div><kbd>click</kbd><span>select a box - only then can it move</span></div>
+        <div><kbd>right-click</kbd><span>box menu: class, duplicate, zoom, delete</span></div>
       </div>
     </div>
     <div class="acts"><button class="btn pri" id="keysclose">Close</button></div>

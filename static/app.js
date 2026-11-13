@@ -21,6 +21,7 @@ let folder = null, folders = [], frames = [], cur = null;
 let status_ = 'all', page = 1, per = 60, query = '';
 let counts = {}, pages = 1, selected = new Set();
 let total = 0, pagePer = 60;                     // frames in the whole filtered list, page size
+let wasF = '', wasCounts = {};                   // Deleted tab: "was annotated" etc. filter
 let classes = [], activeClass = 0, classHi = 0;
 
 let img = new Image(), iw = 0, ih = 0;
@@ -45,13 +46,18 @@ const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const HS = 7;                                   // handle hit size, screen px
 const DRAG_MIN = 5;                             // px of drag before a box is created at all
 const STATUSES = [['all', 'All'], ['unassigned', 'Unassigned'], ['annotated', 'Annotated'],
-                  ['null', 'Null'], ['rejected', 'Rejected']];
+                  ['null', 'Null'], ['rejected', 'Rejected'], ['deleted', 'Deleted']];
+const WAS = [['', 'any state'], ['annotated', 'annotated'], ['unassigned', 'unassigned'],
+             ['null', 'null'], ['rejected', 'rejected']];
 // must match PALETTE in server.py, so a class is the same colour on a card and on the canvas
 const PALETTE = ['#f5c518', '#2fb673', '#3c90e0', '#9b5fd0', '#e0614f', '#17a8a0', '#e0699f',
                  '#6b7fa8', '#c08a3e', '#7cb342'];
 
 /* ---------------------------------------------------------------- plumbing */
 function toast(msg, kind) {
+  // the same message already on screen is not shown again - a key pressed ten times against
+  // a failing server used to stack ten identical errors down the side of the page
+  for (const t of $('#toasts').children) if (t.textContent === msg) return;
   const el = document.createElement('div');
   el.className = 'toast' + (kind ? ' ' + kind : '');
   el.textContent = msg;
@@ -61,7 +67,15 @@ function toast(msg, kind) {
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  if (!r.ok) {
+    const detail = (await r.json().catch(() => ({}))).detail;
+    // A 404 on an endpoint itself (not "no such frame") means the page is newer than the
+    // server: the browser reloads the script, but Python keeps running the old server.py.
+    if (r.status === 404 && (!detail || detail === 'Not Found'))
+      throw new Error('the server is running older code than this page - ' +
+                      'stop labeller (Ctrl+C), start it again, then reload');
+    throw new Error(detail || r.statusText);
+  }
   return r.json();
 }
 
@@ -114,6 +128,7 @@ function syncUrl(push) {
   const view = document.body.dataset.view === 'annotate' ? 'annotate' : 'gallery';
   const p = new URLSearchParams({folder, status: status_, page, per});
   if (query) p.set('q', query);
+  if (wasF && status_ === 'deleted') p.set('was', wasF);
   if (view === 'annotate' && cur) p.set('frame', cur);
   const url = `#${view}?${p}`;
   if (location.hash === url) return;
@@ -132,6 +147,7 @@ async function restoreFromUrl() {
     per = +u.get('per') || per;
     page = +u.get('page') || 1;
     query = u.get('q') || '';
+    wasF = WAS.some(w => w[0] === u.get('was')) ? u.get('was') : '';
     $('#search').value = query;
     $('#per').value = String(per);
     selected.clear();
@@ -438,7 +454,8 @@ function renderFolders() {
     return `<div class="fo${f.name === folder ? ' on' : ''}" data-n="${esc(f.name)}"
               title="${esc(f.name)} — ${esc(f.layout || '')}">
               ${group}${esc(leaf)}
-              <small>${f.count} images · ${f.annotated} annotated · ${f.unassigned} unassigned</small>
+              <small>${f.count} images · ${f.annotated} annotated · ${f.unassigned} unassigned${
+                f.deleted ? ` · <span class="fdel">${f.deleted} deleted</span>` : ''}</small>
             </div>`;
   }).join('');
   $('#folders').querySelectorAll('.fo').forEach(d =>
@@ -454,13 +471,18 @@ async function selectFolder(name) {
 }
 
 /* ---------------------------------------------------------------- gallery */
+function framesUrl(p) {
+  return `/api/frames?folder=${encodeURIComponent(folder)}&status=${status_}` +
+         `&page=${p}&per=${per}&q=${encodeURIComponent(query)}` +
+         (status_ === 'deleted' && wasF ? `&was=${wasF}` : '');
+}
+
 async function loadFrames() {
-  const r = await api(`/api/frames?folder=${encodeURIComponent(folder)}&status=${status_}` +
-                      `&page=${page}&per=${per}&q=${encodeURIComponent(query)}`);
+  const r = await api(framesUrl(page));
   frames = r.items; counts = r.counts; pages = r.pages; page = r.page;
-  total = r.total; pagePer = r.per;
+  total = r.total; pagePer = r.per; wasCounts = r.was_counts || {};
   syncUrl(false);
-  renderTabs(); renderGrid(); renderPager(); renderFramePager(); renderBatch();
+  renderTabs(); renderTrashBar(); renderGrid(); renderPager(); renderFramePager(); renderBatch();
   // the next page's pictures are fetched while this one is being looked at, so paging forward
   // lands on images the browser already has
   clearTimeout(window._pf); window._pf = setTimeout(prefetchNextPage, 900);
@@ -468,11 +490,77 @@ async function loadFrames() {
 
 function renderTabs() {
   $('#tabs').innerHTML = STATUSES.map(([k, label]) =>
-    `<button class="tab${k === status_ ? ' on' : ''}" data-s="${k}">${label}
+    `<button class="tab t-${k}${k === status_ ? ' on' : ''}" data-s="${k}">${label}
        <b>${counts[k] ?? 0}</b></button>`).join('');
   $('#tabs').querySelectorAll('.tab').forEach(b => b.onclick = () => {
-    status_ = b.dataset.s; page = 1; loadFrames();
+    status_ = b.dataset.s; page = 1; wasF = ''; selected.clear(); loadFrames();
   });
+}
+
+// The Deleted tab's own toolbar: filter by what the frame was, and act on the whole tab.
+function renderTrashBar() {
+  const on = status_ === 'deleted';
+  $('#trashbar').classList.toggle('hidden', !on);
+  if (!on) return;
+  const n = counts.deleted ?? 0;
+  $('#wasf').innerHTML = WAS.map(([k, label]) =>
+    `<option value="${k}"${k === wasF ? ' selected' : ''}>was ${label}${
+      k ? ` (${wasCounts[k] ?? 0})` : ` (${n})`}</option>`).join('');
+  const filtered = wasF || query;
+  $('#t-restore-all').textContent = filtered ? `Restore these ${total}` : `Restore all ${total}`;
+  $('#t-empty').textContent = filtered ? `Delete these ${total} forever` : `Delete all ${total} forever`;
+  $('#t-restore-all').disabled = $('#t-empty').disabled = !total;
+}
+$('#wasf').onchange = e => { wasF = e.target.value; page = 1; selected.clear(); loadFrames(); };
+$('#t-restore-all').onclick = async () => {
+  const r = await post('/api/untrash', {folder, all_deleted: true, was: wasF, q: query});
+  toast(`${r.restored} frame(s) restored`, 'ok');
+  selected.clear();
+  await refreshFolderCounts(); await loadFrames();
+};
+$('#t-empty').onclick = () => purge(null, total);
+
+// Delete forever - the only step that touches the disk, so the only one that asks first.
+async function purge(names, n) {
+  const ok = await confirmDialog({
+    title: `Delete ${n} frame(s) forever?`,
+    body: `<p>This removes the image, its label and any annotated/crops copies from disk.</p>
+           ${names ? `<ul>${names.slice(0, 8).map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+           ${names.length > 8 ? `<p class="dim">…and ${names.length - 8} more.</p>` : ''}` : ''}
+           <div class="warn">This cannot be undone.</div>`,
+    okLabel: 'Delete forever'});
+  if (!ok) return;
+  const r = await post('/api/delete', names ? {folder, names}
+                                            : {folder, all_deleted: true, was: wasF, q: query});
+  selected.clear();
+  toast(`${r.removed} frame(s) deleted forever`, 'ok');
+  await refreshFolderCounts(); await loadFrames();
+}
+
+// "Today, 14:00 – 15:00": the heading over one hour of deletions.
+function hourLabel(t) {
+  const d = new Date(t * 1000); d.setMinutes(0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  const diff = Math.round((today - day) / 864e5);
+  const name = diff === 0 ? 'Today' : diff === 1 ? 'Yesterday'
+    : d.toLocaleDateString(undefined, {weekday: 'short', day: 'numeric', month: 'short',
+        ...(d.getFullYear() !== today.getFullYear() ? {year: 'numeric'} : {})});
+  const hh = h => String(h % 24).padStart(2, '0') + ':00';
+  return `${name}, ${hh(d.getHours())} – ${hh(d.getHours() + 1)}`;
+}
+// local hour, not UTC: a +5:30 timezone must still group on the hour you see on the clock
+const hourKey = t => { const d = new Date(t * 1000); d.setMinutes(0, 0, 0); return d.getTime(); };
+// "14:29" today, "Yesterday 14:29", "11 Nov 14:29" - 24-hour, like the hour headings
+function clock(t) {
+  const d = new Date(t * 1000);
+  const hm = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: false});
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((today - day) / 864e5);
+  if (diff === 0) return hm;
+  if (diff === 1) return `Yesterday ${hm}`;
+  return `${d.toLocaleDateString(undefined, {day: 'numeric', month: 'short'})} ${hm}`;
 }
 
 function thumbUrl(name, w) {
@@ -491,21 +579,60 @@ function classChips(ids) {
 function renderGrid() {
   $('#grid').className = gridMode;
   if (!frames.length) {
-    $('#grid').innerHTML = `<div class="empty big">Nothing in this tab.</div>`;
+    $('#grid').innerHTML = `<div class="empty big">${status_ === 'deleted'
+      ? 'Nothing deleted. Press <b>Del</b> on a frame while annotating to send it here.'
+      : 'Nothing in this tab.'}</div>`;
     return;
   }
-  $('#grid').innerHTML = frames.map(f => `
-    <div class="card${selected.has(f.name) ? ' sel' : ''}" data-n="${esc(f.name)}">
+  const card = f => {
+    const gone = f.status === 'deleted';
+    return `
+    <div class="card${gone ? ' deleted' : ''}${selected.has(f.name) ? ' sel' : ''}" data-n="${esc(f.name)}">
       <div class="cbox"><input type="checkbox" ${selected.has(f.name) ? 'checked' : ''}></div>
       <div class="ci"><img loading="lazy" decoding="async" src="${thumbUrl(f.name)}" alt=""></div>
       <div class="cm">
-        <span class="dot ${f.status}" title="${f.status}"></span>
+        <span class="dot ${f.status}" title="${gone ? 'deleted - was ' + f.was : f.status}"></span>
         <span class="cn" title="${esc(f.name)}">${esc(f.name)}</span>
         <span class="cb">${f.boxes || ''}</span>
       </div>
-      <div class="cc">${classChips(f.classes)}${
-        f.note ? `<span class="mini warn">${esc(f.note.slice(0, 40))}</span>` : ''}</div>
-    </div>`).join('');
+      <div class="cc">${gone
+        ? `<span class="mini gone" title="Deleted at ${clock(f.deleted_at)}">was ${f.was} · ${clock(f.deleted_at)}</span>` : ''}${
+        classChips(f.classes)}${
+        f.note && !gone ? `<span class="mini warn">${esc(f.note.slice(0, 40))}</span>` : ''}</div>
+    </div>`;
+  };
+
+  if (status_ === 'deleted') {
+    // newest first (the server sorts), one section per hour of deletions
+    const groups = [];
+    for (const f of frames) {
+      const k = hourKey(f.deleted_at);
+      if (!groups.length || groups[groups.length - 1].k !== k) groups.push({k, t: f.deleted_at, items: []});
+      groups[groups.length - 1].items.push(f);
+    }
+    $('#grid').innerHTML = groups.map(g => {
+      const all = g.items.every(f => selected.has(f.name));
+      return `<div class="ghead" data-k="${g.k}">
+          <label class="selall"><input type="checkbox"${all ? ' checked' : ''}>
+            <b>${hourLabel(g.t)}</b></label>
+          <span class="dim">${g.items.length} frame${g.items.length === 1 ? '' : 's'}</span>
+          <span class="sp"></span>
+          <button class="btn sm" data-act="restore">Restore</button>
+          <button class="btn sm danger" data-act="purge">Delete forever</button>
+        </div>` + g.items.map(card).join('');
+    }).join('');
+    $('#grid').querySelectorAll('.ghead').forEach(h => {
+      const names = groups.find(g => String(g.k) === h.dataset.k).items.map(f => f.name);
+      h.querySelector('input').onchange = e => {
+        names.forEach(n => e.target.checked ? selected.add(n) : selected.delete(n));
+        renderGrid(); renderBatch();
+      };
+      h.querySelector('[data-act=restore]').onclick = () => restoreNames(names);
+      h.querySelector('[data-act=purge]').onclick = () => purge(names, names.length);
+    });
+  } else {
+    $('#grid').innerHTML = frames.map(card).join('');
+  }
 
   $('#grid').querySelectorAll('.card').forEach(el => {
     const name = el.dataset.n;
@@ -514,6 +641,7 @@ function renderGrid() {
       selected.has(name) ? selected.delete(name) : selected.add(name);
       el.classList.toggle('sel', selected.has(name));
       el.querySelector('input').checked = selected.has(name);
+      if (status_ === 'deleted') renderGrid();     // keeps the hour's checkbox in step
       renderBatch();
     };
     el.onclick = () => openFrame(name);
@@ -585,6 +713,12 @@ function renderBatch() {
   box.indeterminate = onPage > 0 && onPage < frames.length;
   $('#selall-label').textContent =
     onPage && onPage === frames.length ? 'Clear page' : `Select page (${frames.length})`;
+  // In the Deleted tab the only things to do are bring back or remove for good.
+  const inTrash = status_ === 'deleted';
+  ['#b-null', '#b-reject', '#b-restore', '#b-clear', '#b-del'].forEach(s =>
+    $(s).classList.toggle('hidden', inTrash));
+  $('#b-untrash').classList.toggle('hidden', !(inTrash || status_ === 'all'));
+  $('#b-purge').classList.toggle('hidden', !inTrash);
 }
 
 $('#search').addEventListener('input', () => {
@@ -632,21 +766,28 @@ $('#b-clear').onclick = async () => {
     okLabel: 'Clear labels'});
   if (ok) batch('unassigned', 'cleared');
 };
+// Delete is a soft delete now - the frames move to the Deleted tab - so it does not ask.
 $('#b-del').onclick = async () => {
   const names = Array.from(selected);
-  const ok = await confirmDialog({
-    title: `Delete ${names.length} frame(s)?`,
-    body: `<p>This removes the image, its label and any annotated/crops copies from disk.</p>
-           <ul>${names.slice(0, 8).map(n => `<li>${esc(n)}</li>`).join('')}</ul>
-           ${names.length > 8 ? `<p class="dim">…and ${names.length - 8} more.</p>` : ''}
-           <div class="warn">This cannot be undone.</div>`});
-  if (!ok) return;
-  await post('/api/delete', {folder, names});
+  let r;
+  try { r = await post('/api/trash', {folder, names}); }
+  catch (e) { toast('Delete failed: ' + e.message, 'err'); return; }
   selected.clear();
-  toast(`${names.length} frame(s) deleted`, 'ok');
+  toast(`${r.moved} frame(s) moved to Deleted`, 'ok');
   await refreshFolderCounts();
   await loadFrames();
 };
+async function restoreNames(names) {
+  let r;
+  try { r = await post('/api/untrash', {folder, names}); }
+  catch (e) { toast('Restore failed: ' + e.message, 'err'); return; }
+  names.forEach(n => selected.delete(n));
+  toast(`${r.restored} frame(s) restored`, 'ok');
+  await refreshFolderCounts();
+  await loadFrames();
+}
+$('#b-untrash').onclick = () => restoreNames(Array.from(selected));
+$('#b-purge').onclick = () => { const n = Array.from(selected); purge(n, n.length); };
 
 async function refreshFolderCounts() {
   folders = await api('/api/folders');
@@ -659,7 +800,7 @@ function isCheck(f) { return /CHECK/i.test(f.note || ''); }
 function renderFrameList() {
   $('#fcount').textContent = frames.length ? `${frames.length}` : '';
   $('#frames').innerHTML = frames.map(f =>
-    `<div class="fr${f.name === cur ? ' on' : ''}" data-n="${esc(f.name)}">
+    `<div class="fr${f.name === cur ? ' on' : ''}${f.status === 'deleted' ? ' deleted' : ''}" data-n="${esc(f.name)}">
        <span class="dot ${f.status}"></span>
        <span class="fn">${esc(f.name)}</span>
        ${isCheck(f) ? '<span class="chk">!</span>' : ''}
@@ -673,6 +814,7 @@ function renderFrameList() {
 
 async function openFrame(name, skipSave) {
   if (dirty && cur && !skipSave) await save(true);
+  closeBoxMenu();
   cur = name;
   setView('annotate');
   renderFrameList();
@@ -683,6 +825,7 @@ async function openFrame(name, skipSave) {
   past = []; future = []; syncUndo();
   $('#title').textContent = `${name}  ${iw}×${ih}`;
   showRejected(!!d.rejected);
+  showDeleted(!!d.deleted);
   const i = frames.findIndex(f => f.name === name);
   // position on this page, then in the whole list: "1 / 60 · 61 / 2000"
   $('#pos').textContent = i >= 0
@@ -897,7 +1040,7 @@ const stage = $('#stage');
 // The view bar and the loupe live inside #stage so they float over the picture. That also
 // means their clicks arrive at the drawing handler, which is why pressing Contrast left a
 // small box behind every time. Anything that starts on a control is not a drawing gesture.
-const onChrome = e => !!(e.target.closest && e.target.closest('#viewbar'));
+const onChrome = e => !!(e.target.closest && e.target.closest('#viewbar, #boxmenu'));
 
 // Two tools: 'draw' makes boxes, 'pan' moves the view. Holding Ctrl or Space pans with either
 // one, and the middle button always pans.
@@ -1005,6 +1148,102 @@ stage.addEventListener('mousemove', e => {
   }
   render();                                        // move the guide lines with the cursor
   loupe(px, py);
+});
+
+/* ---------------------------------------------------------------- box menu
+ * Right-click on a box selects it - or keeps it selected - and opens a menu of what can be
+ * done to it. Where boxes overlap, an already selected box under the pointer wins, then the
+ * smallest. Right-click elsewhere on the picture does nothing (and no browser menu). */
+const boxMenu = $('#boxmenu');
+
+function closeBoxMenu() {
+  if (boxMenu.hidden) return;
+  boxMenu.hidden = true; boxMenu.innerHTML = '';
+}
+
+function openBoxMenu(i, px, py) {
+  const b = boxes[i];
+  const item = (act, label, key, cls = '') =>
+    `<button data-a="${act}" class="${cls}" role="menuitem">${label}${
+      key ? `<span class="k">${key}</span>` : ''}</button>`;
+  boxMenu.innerHTML =
+    `<div class="mh">${esc(nameOf(b[4]))} ${Math.round(b[2] - b[0])}×${Math.round(b[3] - b[1])}</div>` +
+    (classes.length > 1
+      ? '<div class="ml">Class</div>' + classes.map((c, ci) =>
+          `<button data-a="cls" data-c="${ci}" class="${ci === b[4] ? 'cur' : ''}" role="menuitemradio">
+             <span class="sw" style="--c:${colorOf(ci)}"></span>${esc(c.name)}</button>`).join('') +
+        '<div class="ms"></div>'
+      : '') +
+    item('dup', 'Duplicate') +
+    item('zoom', 'Zoom to box') +
+    item('desel', 'Deselect', 'Esc') +
+    '<div class="ms"></div>' +
+    item('del', 'Delete box', 'Del', 'danger');
+
+  // Show it beside the pointer, flipped to stay inside the picture area.
+  $('#loupe').style.display = 'none';
+  boxMenu.hidden = false;
+  const W = cv.width, H = cv.height, mw = boxMenu.offsetWidth, mh = boxMenu.offsetHeight;
+  boxMenu.style.left = Math.max(4, px + mw + 4 > W ? px - mw : px) + 'px';
+  boxMenu.style.top = Math.max(4, py + mh + 4 > H ? py - mh : py) + 'px';
+
+  boxMenu.querySelectorAll('button').forEach(btn => btn.onclick = e => {
+    e.stopPropagation();
+    const a = btn.dataset.a;
+    closeBoxMenu();
+    if (i >= boxes.length) return;
+    if (a === 'del') {
+      remember(); boxes.splice(i, 1); sel = -1; dirty = true;
+    } else if (a === 'cls') {
+      const c = +btn.dataset.c;
+      if (c !== boxes[i][4]) { remember(); boxes[i][4] = c; dirty = true; classHi = c; renderClassList(); }
+    } else if (a === 'dup') {
+      // a copy nudged down-right so it is visible, kept inside the image
+      remember(); boxes.push(shiftInside(boxes[i].slice(), 8 / viewport.s, 8 / viewport.s));
+      sel = boxes.length - 1; dirty = true;
+    } else if (a === 'zoom') {
+      const [W2, H2] = stageSize(), bb = boxes[i];
+      const s = Math.min(W2 / (bb[2] - bb[0]), H2 / (bb[3] - bb[1])) * 0.5;
+      viewport.s = Math.max(0.02, Math.min(80, s));
+      viewport.x = W2 / 2 - (bb[0] + bb[2]) / 2 * viewport.s;
+      viewport.y = H2 / 2 - (bb[1] + bb[3]) / 2 * viewport.s;
+      syncZoom();
+    } else if (a === 'desel') {
+      sel = -1;
+    }
+    renderBoxes(); render();
+  });
+  const first = boxMenu.querySelector('button');
+  if (first) first.focus({preventScroll: true});
+}
+
+stage.addEventListener('contextmenu', e => {
+  e.preventDefault();                              // never the browser's menu over the picture
+  if (busy || onChrome(e) || e.target.closest('#boxmenu')) return;
+  const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  const [ix, iy] = toImg(px, py);
+  const under = boxAt(ix, iy);
+  if (!under.length) { closeBoxMenu(); return; }
+  const i = under.includes(sel) ? sel : under[0];
+  sel = i; classHi = boxes[i][4];
+  renderBoxes(); renderClassList(); render();
+  openBoxMenu(i, px, py);
+});
+// Any other click, scroll, Escape or frame change closes it.
+document.addEventListener('mousedown', e => { if (!e.target.closest('#boxmenu')) closeBoxMenu(); }, true);
+stage.addEventListener('wheel', closeBoxMenu, {passive: true});
+// Keys typed while the menu has focus belong to the menu, not to the frame shortcuts.
+boxMenu.addEventListener('keydown', e => {
+  e.stopPropagation();
+  const items = [...boxMenu.querySelectorAll('button')];
+  const at = items.indexOf(document.activeElement);
+  if (e.key === 'Escape') { e.preventDefault(); closeBoxMenu(); }
+  else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    items[(at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+  } else if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault(); boxMenu.querySelector('[data-a="del"]').click();
+  }
 });
 
 stage.addEventListener('mouseleave', () => {
@@ -1139,7 +1378,8 @@ async function save(quiet) {
     const f = frames.find(x => x.name === cur);
     if (f) {
       f.boxes = r.boxes;
-      f.status = r.boxes ? 'annotated' : 'null';
+      // a deleted frame stays deleted; what changes is the state a restore brings back
+      f[f.status === 'deleted' ? 'was' : 'status'] = r.boxes ? 'annotated' : 'null';
       f.classes = Array.from(new Set(boxes.map(b => b[4]))).sort((a, b) => a - b);
       renderFrameList();
     }
@@ -1191,23 +1431,64 @@ $('#reject').onclick = async () => {
   await post('/api/status', {folder, names: [cur], status: on ? 'unrejected' : 'rejected'});
   showRejected(!on);
   const f = frames.find(x => x.name === cur);
-  if (f) { f.status = on ? (f.boxes ? 'annotated' : 'unassigned') : 'rejected'; renderFrameList(); }
+  if (f) {
+    f[f.status === 'deleted' ? 'was' : 'status'] =
+      on ? (f.boxes ? 'annotated' : 'unassigned') : 'rejected';
+    renderFrameList();
+  }
   toast(on ? 'Un-rejected' : 'Rejected', 'ok');
 };
-$('#del').onclick = async () => {
-  const ok = await confirmDialog({
-    title: 'Delete this frame?',
-    body: `<p>Removes from disk:</p><ul><li><b>${esc(cur)}</b></li></ul>
-           <div class="warn">This cannot be undone.</div>`});
-  if (!ok) return;
-  const i = frames.findIndex(f => f.name === cur);
-  await post('/api/delete', {folder, names: [cur]});
-  frames.splice(i, 1);
-  toast('Frame deleted', 'ok');
-  await refreshFolderCounts();
-  if (!frames.length) { setView('gallery'); loadFrames(); return; }
-  openFrame(frames[Math.min(i, frames.length - 1)].name, true);
-};
+
+// On a deleted frame the Delete button becomes Restore.
+function showDeleted(on) {
+  $('#del').classList.toggle('restore', on);
+  $('#del span').textContent = on ? 'Restore' : 'Delete';
+  $('#del').title = on ? 'This frame is deleted - click to restore it'
+                       : 'Move this frame to the Deleted tab (Del) - it can be restored from there';
+}
+
+/* Delete (or restore) the open frame and carry on. No dialog: deleting only moves the frame to
+ * the Deleted tab, where it can be restored or removed for good. Any boxes drawn on it are
+ * saved first, so a restore brings them back too. */
+async function moveCurrent(trash) {
+  if (!cur || stepping) return;
+  const name = cur;
+  const f = frames.find(x => x.name === name);
+  if (trash && f && f.status === 'deleted') {
+    toast('Already deleted. Restore it, or delete it forever from the Deleted tab.');
+    return;
+  }
+  stepping = true;
+  let next = null;
+  try {
+    if (dirty) await save(true);
+    const i = frames.findIndex(x => x.name === name);
+    await post(trash ? '/api/trash' : '/api/untrash', {folder, names: [name]});
+    toast(trash ? `${name} moved to Deleted` : `${name} restored`, 'ok');
+    refreshFolderCounts().catch(() => {});
+    if (status_ === 'all') {
+      // the frame stays in this list, only its colour changes
+      if (f) {
+        if (trash) { f.was = f.status; f.status = 'deleted'; f.deleted_at = Date.now() / 1000; }
+        else { f.status = f.was || (f.boxes ? 'annotated' : 'unassigned'); }
+      }
+      renderFrameList(); showDeleted(trash);
+      if (trash) next = 'step';
+    } else {
+      // it has left this tab: reload the page, and the frame after it slides into its place
+      const before = page;
+      await loadFrames();
+      if (!frames.length) { setView('gallery'); return; }
+      const j = page !== before ? frames.length - 1 : Math.min(Math.max(i, 0), frames.length - 1);
+      next = frames[j].name;
+    }
+  } catch (e) {
+    toast((trash ? 'Delete' : 'Restore') + ' failed: ' + e.message, 'err');
+  } finally { stepping = false; }
+  if (next === 'step') step(1);
+  else if (next) openFrame(next, true);
+}
+$('#del').onclick = () => moveCurrent(!$('#del').classList.contains('restore'));
 
 /* ---------------------------------------------------------------- view bar */
 function zoomTo(scale, ax, ay) {
@@ -1263,6 +1544,7 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape') setView('gallery');
     return;
   }
+  closeBoxMenu();                                  // any shortcut acts on the frame, not the menu
   if (e.code === 'Space') { space = true; idleCursor(e); e.preventDefault(); return; }
   if (e.key === 'Control' || e.key === 'Meta') { if (!draw_ && !grab) idleCursor(e); return; }
   const k = e.key;
@@ -1312,6 +1594,14 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     remember();
     boxes.splice(sel, 1); sel = -1; dirty = true; renderBoxes(); render();
+    return;
+  }
+  // Del with no box selected deletes the frame itself: it goes to the Deleted tab, no dialog.
+  // Only Del, not Backspace - Backspace is too easy to hit while meaning to remove a box.
+  // Holding the key down must not run through a string of frames, so repeats are ignored.
+  if (k === 'Delete' && sel < 0 && !draw_ && !grab) {
+    e.preventDefault();
+    if (!e.repeat) moveCurrent(true);
   }
 });
 document.addEventListener('keyup', e => {
@@ -1328,8 +1618,7 @@ window.addEventListener('beforeunload', e => {
 /* ---------------------------------------------------------------- boot */
 function prefetchNextPage() {
   if (page >= pages) return;
-  api(`/api/frames?folder=${encodeURIComponent(folder)}&status=${status_}` +
-      `&page=${page + 1}&per=${per}&q=${encodeURIComponent(query)}`)
+  api(framesUrl(page + 1))
     .then(r => r.items.slice(0, 24).forEach(f => { new Image().src = thumbUrl(f.name); }))
     .catch(() => {});
 }

@@ -213,6 +213,38 @@ button,input,select,textarea{font:inherit;color:inherit}
 .dot.null{background:#aab4c0}
 .dot.unassigned{background:var(--bad)}
 .dot.rejected{background:#7c3b34}
+.dot.deleted{background:var(--bad);box-shadow:0 0 0 2px #fbd5d0}
+
+/* deleted frames: a red card, wherever they appear (All tab or Deleted tab) */
+.card.deleted{background:#fdecea;border-color:#f0b4ac}
+.card.deleted:hover{border-color:var(--bad)}
+.card.deleted.sel{border-color:var(--bad);box-shadow:0 0 0 2px #f7c9c3}
+.card.deleted .ci{background:#f6d6d1}
+.card.deleted .ci img{opacity:.78}
+.card.deleted .cn{color:#9a3a30}
+.mini.gone{background:#f7c9c3;color:#8c2a20;font-weight:600}
+.fdel{color:var(--bad)}
+.fr.deleted{background:#fdecea}
+.fr.deleted .fn{color:#9a3a30;text-decoration:line-through;text-decoration-color:#e8a59c}
+.fr.deleted.on{background:#f9d9d4;box-shadow:inset 3px 0 0 var(--bad)}
+
+.tab.t-deleted.on{border-bottom-color:var(--bad)}
+.tab.t-deleted.on b{background:#fdecea;color:#a3352a}
+
+#trashbar{display:flex;align-items:center;gap:9px;padding:8px 14px;background:#fdf1f0;
+  border-bottom:1px solid #f3cdc8;flex:none;font-size:12.5px;color:#7a2d25}
+#trashbar.hidden{display:none}
+#trashbar .tnote{min-width:0}
+#trashbar .btn:disabled{opacity:.45;cursor:default}
+
+/* one hour of deletions in the Deleted tab */
+.ghead{grid-column:1/-1;display:flex;align-items:center;gap:10px;padding:10px 2px 4px;
+  border-bottom:1px solid var(--line);font-size:13px}
+.ghead:not(:first-child){margin-top:10px}
+.ghead b{color:var(--fg)}
+.btn.sm{padding:3px 9px;font-size:12px}
+#del.restore{color:var(--good);border-color:#a8dcbf}
+#del.restore:hover{background:#eefaf3;border-color:var(--good);color:var(--good)}
 
 #pager{display:flex;align-items:center;gap:5px;padding:9px 14px;border-top:1px solid var(--line);
   flex:none;flex-wrap:wrap;background:var(--panel)}
@@ -260,6 +292,24 @@ button,input,select,textarea{font:inherit;color:inherit}
   border-radius:50%;pointer-events:none;display:none;overflow:hidden;background:#fff;z-index:6;
   box-shadow:0 8px 28px rgba(20,30,45,.28)}
 #loupe canvas{border-radius:50%;display:block}
+/* right-click menu on a box */
+#boxmenu{position:absolute;z-index:20;min-width:190px;background:var(--panel);
+  border:1px solid var(--line2);border-radius:var(--r);padding:4px;font-size:13px;
+  box-shadow:0 6px 24px rgba(20,30,45,.18),0 1px 3px rgba(20,30,45,.1)}
+#boxmenu[hidden]{display:none}
+#boxmenu .mh{padding:6px 10px 5px;font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+#boxmenu .ms{height:1px;background:var(--line);margin:4px 2px}
+#boxmenu .ml{padding:4px 10px 2px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--dim)}
+#boxmenu button{display:flex;align-items:center;gap:8px;width:100%;background:none;border:none;
+  text-align:left;padding:6px 10px;border-radius:4px;color:var(--fg);cursor:pointer;font:inherit}
+#boxmenu button:hover,#boxmenu button:focus-visible{background:var(--panel2);outline:none}
+#boxmenu button .k{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim)}
+#boxmenu button.cur{font-weight:600}
+#boxmenu button.cur::after{content:"✓";margin-left:auto;color:var(--dim)}
+#boxmenu .sw{width:10px;height:10px;border-radius:3px;background:var(--c);flex:none}
+#boxmenu button.danger{color:var(--bad)}
+#boxmenu button.danger:hover{background:color-mix(in srgb,var(--bad) 10%,transparent)}
 #loupepct{background:none;border:1px solid var(--line2);border-radius:var(--r);color:var(--muted);
   font-family:var(--mono);font-size:12px;padding:2px 2px;cursor:pointer}
 #loupepct:hover{color:var(--fg);background:var(--panel2)}

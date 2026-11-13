@@ -258,6 +258,7 @@ Tabs filter by state, and each frame is in exactly one:
 | **Annotated** | a label file with at least one box |
 | **Null** | a label file that is empty — verified as having nothing in it |
 | **Rejected** | listed in `.labeller/rejected.txt` — unusable frame, excluded from export |
+| **Deleted** | listed in `.labeller/deleted.json` with when it was deleted — waiting for a final review |
 
 An empty label file is **not** the same as a missing one. One says "I looked and there is
 nothing here", which is a training negative; the other says "nobody has looked". Rejecting keeps
@@ -267,7 +268,21 @@ labelling.
 ![Batch actions](docs/03-gallery-batch.png)
 
 Select cards with their checkboxes for the batch bar: mark null, reject, un-reject, clear labels
-(back to Unassigned), or delete from disk. Deleting always asks first and names what goes.
+(back to Unassigned), or delete.
+
+**Deleting is a soft delete.** It does not ask, because nothing is lost: the frame moves to the
+**Deleted** tab and its image and label stay exactly where they are. In the **All** tab a deleted
+frame shows as a red card. The Deleted tab is the final review:
+
+- newest deletions first, in one section per hour, headed with the time ("Today, 14:00 – 15:00")
+- each card says what the frame was before ("was annotated · 14:29")
+- filter by that earlier state, or by filename
+- **Restore** puts a frame back as it was; **Delete forever** removes the image, its label and
+  any annotated/crops copies from disk. Either works on a selection, a whole hour, or the whole
+  (filtered) tab. Delete forever is the only step that asks first, and it cannot be undone.
+
+Until a frame is deleted forever its files are still in `images/` and `labels/`, so a training
+run that reads those folders directly will still see it.
 
 ![List view](docs/06-list.png)
 
@@ -280,6 +295,7 @@ There is a list view too, showing the same preview laid out across instead of st
 | **B** / **H** | switch between the box tool and the pan tool (also on the view bar) |
 | **drag** | box tool: draw a box in the active class. Pan tool: move the view |
 | **click a box** | select it — only a selected box can be dragged or resized. Dragging over an unselected box draws a new one; where boxes overlap, the click picks the smallest |
+| **right-click a box** | selects it (or keeps it selected) and opens a menu: change class, duplicate, zoom to box, deselect, delete |
 | **wheel** | zoom at the cursor |
 | **Ctrl-drag**, space-drag, middle-drag | pan, whichever tool is active |
 | **loupe** | follows the cursor at 8× (100%), in the quadrant opposite it, so it never covers the target. The picker beside its button, or `[` and `]`, sets 75%, 50% or 25% (6×, 4×, 2×) for a wider, less enlarged view |
@@ -291,7 +307,8 @@ so a stray click on the picture cannot leave a label behind.
 
 `→` next · `←` prev · `↑` `↓` cycle class · `2`…`9` pick a class · `S` save · `N` mark null ·
 `R` reject · `A` assisted candidates · `E` contrast · `0` fit · `1` 100% · `Ctrl+Z` undo ·
-`Ctrl+Shift+Z` redo · `Del` remove selected box · `Esc` deselect · `?` the full list
+`Ctrl+Shift+Z` redo · `Del` remove selected box — or, with no box selected, move the frame to
+Deleted and open the next one · `Esc` deselect · `?` the full list
 
 **Navigating saves.** There is no unsaved-changes prompt — a confirmation on every frame is
 friction in a job that runs to hundreds of frames. **Next and previous follow the tab and the
@@ -346,12 +363,13 @@ Everything the interface does is a plain HTTP call, so the same operations can b
 | `GET /api/folders` | image folders under the root, with per-status counts |
 | `GET /api/classes` · `POST /api/classes` | read and write the class list, remapping labels |
 | `GET /api/class-usage` | how many boxes point at each class |
-| `GET /api/frames?folder=&status=&page=&per=&q=` | one page of frames, with tab counts |
+| `GET /api/frames?folder=&status=&page=&per=&q=&was=` | one page of frames, with tab counts |
 | `GET /api/thumb?folder=&name=&w=&ann=` | card-sized copy, boxes drawn by default |
 | `GET /api/image?folder=&name=&enhance=` | the frame, optionally contrast-enhanced |
 | `GET /api/label` · `POST /api/label` | boxes in pixel coordinates, with class indices |
 | `POST /api/status` | mark rejected, null, or back to unassigned, in batches |
-| `POST /api/delete` | remove frames and everything derived from them, in batches |
+| `POST /api/trash` · `POST /api/untrash` | move frames to Deleted, or restore them |
+| `POST /api/delete` | delete forever: remove frames and everything derived from them |
 | `POST /api/snap` | `{x, y}` to a tight box |
 | `POST /api/ai` | candidates from model, differencing and local contrast |
 
