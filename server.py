@@ -143,7 +143,32 @@ def label_dir(d: Path, make: bool = False) -> Path:
         if make:
             ld.mkdir(exist_ok=True)
         return ld
+    twin = split_twin(d)
+    if twin is not None:
+        if make:
+            twin.mkdir(parents=True, exist_ok=True)
+        return twin
     return d
+
+
+def split_twin(d: Path):
+    """
+    The labels folder for an image folder that sits INSIDE images/ - the per-category layout
+
+        train/images/bird/*.jpg   with   train/labels/bird/*.txt
+
+    found by swapping the last "images" in the path for "labels", which is the rule Ultralytics
+    itself uses. Only when that labels/ folder exists beside images/; otherwise None, and the
+    folder is treated as flat.
+    """
+    parts = d.parts
+    for i in range(len(parts) - 1, 0, -1):
+        if parts[i] == "images":
+            base = Path(*parts[:i])
+            if (base / "labels").is_dir():
+                return base / "labels" / Path(*parts[i + 1:]) if i + 1 < len(parts) else base / "labels"
+            return None
+    return None
 
 
 def images_of(d: Path):
@@ -513,8 +538,9 @@ def scan(d: Path) -> dict:
         return {"images": 0, "labelled": 0, "layout": None}
     ld = label_dir(d)
     labelled = sum(1 for p in imgs if (ld / (p.stem + ".txt")).exists())
-    return {"images": len(imgs), "labelled": labelled,
-            "layout": "images/ + labels/" if (d / "images").is_dir() else "flat"}
+    layout = ("images/ + labels/" if (d / "images").is_dir()
+              else "images/<sub>/ + labels/<sub>/" if split_twin(d) is not None else "flat")
+    return {"images": len(imgs), "labelled": labelled, "layout": layout}
 
 
 @app.get("/api/browse")
@@ -680,9 +706,12 @@ def folders():
     if hit and time.monotonic() - hit[0] < WALK_TTL:
         dirs = hit[1]
     else:
+        # images/ itself is skipped, but not what is inside it: datasets sorted by category
+        # keep their frames in images/bird/, images/kite/... with labels/bird/ beside them.
+        below = skip - {"images"}
         dirs = [p for p in sorted(root.rglob("*"))
                 if p.is_dir() and not p.name.startswith(".") and p.name not in skip
-                and not any(q in skip for q in p.relative_to(root).parts)]
+                and not any(q in below or q.startswith(".") for q in p.relative_to(root).parts)]
         _WALK[str(root)] = (time.monotonic(), dirs)
     add(root)
     for p in dirs:

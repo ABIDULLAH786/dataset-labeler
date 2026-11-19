@@ -47,6 +47,9 @@ const HS = 7;                                   // handle hit size, screen px
 const DRAG_MIN = 5;                             // px of drag before a box is created at all
 const STATUSES = [['all', 'All'], ['unassigned', 'Unassigned'], ['annotated', 'Annotated'],
                   ['null', 'Null'], ['rejected', 'Rejected'], ['deleted', 'Deleted']];
+// shown as words in the list view, where there is room to say what the dot means
+const STATUS_LABEL = {unassigned: 'Unassigned', annotated: 'Annotated', null: 'Null',
+                      rejected: 'Rejected', deleted: 'Deleted'};
 const WAS = [['', 'any state'], ['annotated', 'annotated'], ['unassigned', 'unassigned'],
              ['null', 'null'], ['rejected', 'rejected']];
 // must match PALETTE in server.py, so a class is the same colour on a card and on the canvas
@@ -445,22 +448,124 @@ $('#clssave').onclick = async () => {
 };
 
 /* ---------------------------------------------------------------- folders */
+/* The folder pane is a tree, at most three levels deep:
+ *
+ *     dataset  ▸  train  ▸  bird
+ *
+ * The first two levels are sections that open and close; the third is the folder itself. A path
+ * that goes deeper is named in full at the third level ("c/d"), so the pane never indents past
+ * readability. "images" is dropped from names - it is where frames sit, not a level of meaning.
+ * Every section can be opened and closed on its own; that choice is remembered per browser. */
+const MAX_DEPTH = 3;
+const openGroups = (() => {                      // {section key: true|false}, only what was toggled
+  try { return JSON.parse(localStorage.getItem('dl-groups') || '{}'); } catch { return {}; }
+})();
+const saveGroups = () => { try { localStorage.setItem('dl-groups', JSON.stringify(openGroups)); } catch {} };
+const shownParts = name => name.split('/').filter(p => p !== 'images');
+// "train/images/bird" reads as "train/bird"
+const leafName = rel => shownParts(rel).join('/');
+const inSection = (key, name) => name !== '.' && (shownParts(name).join('/') + '/').startsWith(key + '/');
+// a section starts open only if it holds the folder being worked in; a click remembers otherwise
+const isOpen = key => key in openGroups ? openGroups[key] : !!folder && inSection(key, folder);
+
+function folderTree() {
+  const root = {key: '', kids: [], items: []};
+  for (const f of folders) {
+    if (f.name === '.') { root.items.push({f, label: '(this folder)'}); continue; }
+    const parts = shownParts(f.name);
+    const secs = parts.slice(0, Math.min(parts.length - 1, MAX_DEPTH - 1));
+    let node = root;
+    for (const p of secs) {
+      const key = node.key ? `${node.key}/${p}` : p;
+      let k = node.kids.find(x => x.key === key);
+      if (!k) { k = {key, name: p, kids: [], items: []}; node.kids.push(k); }
+      node = k;
+    }
+    node.items.push({f, label: parts.slice(secs.length).join('/')});
+  }
+  // A folder that holds frames itself AND has folders under it goes inside its own section,
+  // as "(this folder)", instead of appearing twice side by side.
+  (function fold(n) {
+    for (const k of n.kids) {
+      const i = n.items.findIndex(it => it.label === k.name);
+      if (i >= 0) k.items.unshift({...n.items.splice(i, 1)[0], label: '(this folder)'});
+      fold(k);
+    }
+  })(root);
+  return root;
+}
+
+const allIn = n => n.items.map(it => it.f).concat(...n.kids.map(allIn));
+const allKeys = n => n.kids.flatMap(k => [k.key, ...allKeys(k)]);
+
+const countsLine = fs => {
+  const sum = k => fs.reduce((a, f) => a + (f[k] || 0), 0);
+  return `${sum('count')} images · ${sum('annotated')} annotated · ${sum('unassigned')} unassigned${
+    sum('deleted') ? ` · <span class="fdel">${sum('deleted')} deleted</span>` : ''}`;
+};
+
+function folderRow(f, label, depth) {
+  return `<div class="fo${f.name === folder ? ' on' : ''}" data-n="${esc(f.name)}" style="--d:${depth}"
+            title="${esc(f.name)} — ${esc(f.layout || '')}">
+            <span class="fon">${esc(label)}</span>
+            <small>${countsLine([f])}</small>
+          </div>`;
+}
+
+function sectionHtml(n, depth) {
+  const fs = allIn(n);
+  const open = isOpen(n.key);
+  const here = fs.some(f => f.name === folder);
+  // closed, the section still names the open folder, so "where am I" never needs a click
+  const rest = here && !open
+    ? (folder === n.key ? '(this folder)' : shownParts(folder).slice(n.key.split('/').length).join('/') || '(this folder)')
+    : '';
+  const nFolders = fs.length;
+  return `<div class="fg${open ? ' open' : ''}${here ? ' here' : ''}" data-g="${esc(n.key)}" style="--d:${depth}">
+      <div class="fgh" title="${esc(n.key)}${here ? ' — you are working in here' : ''}"
+           aria-expanded="${open}" role="button" tabindex="0">
+        <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        <span class="fgn">${esc(n.name)}</span>
+        <span class="fgc" title="${nFolders} image folder${nFolders === 1 ? '' : 's'}">${nFolders}</span>
+        ${rest ? `<span class="fgcur" title="The folder open in the gallery">${esc(rest)}</span>` : ''}
+        <small>${countsLine(fs)}</small>
+      </div>
+      <div class="fgb">${nodeHtml(n, depth + 1)}</div>
+    </div>`;
+}
+
+function nodeHtml(n, depth) {
+  return n.items.map(it => folderRow(it.f, it.label, depth)).join('') +
+         n.kids.map(k => sectionHtml(k, depth)).join('');
+}
+
 function renderFolders() {
-  $('#folder-n').textContent = folders.length || '';
-  $('#folders').innerHTML = folders.map(f => {
-    const i = f.name.lastIndexOf('/');
-    const group = i < 0 ? '' : `<em>${esc(f.name.slice(0, i))}</em>`;
-    const leaf = f.name === '.' ? '(this folder)' : f.name.slice(i + 1);
-    return `<div class="fo${f.name === folder ? ' on' : ''}" data-n="${esc(f.name)}"
-              title="${esc(f.name)} — ${esc(f.layout || '')}">
-              ${group}${esc(leaf)}
-              <small>${f.count} images · ${f.annotated} annotated · ${f.unassigned} unassigned${
-                f.deleted ? ` · <span class="fdel">${f.deleted} deleted</span>` : ''}</small>
-            </div>`;
-  }).join('');
+  const tree = folderTree();
+  const keys = allKeys(tree);
+  const nTop = tree.kids.length;
+  $('#folder-n').textContent = folders.length ? (nTop ? `${nTop} · ${folders.length}` : folders.length) : '';
+  $('#folder-n').title = nTop ? `${nTop} dataset(s), ${folders.length} image folders` : '';
+  $('#fo-all').classList.toggle('hidden', !keys.length);
+  $('#fo-all').textContent = keys.some(k => !isOpen(k)) ? 'expand all' : 'collapse all';
+  $('#folders').innerHTML = nodeHtml(tree, 0);
   $('#folders').querySelectorAll('.fo').forEach(d =>
     d.onclick = () => selectFolder(d.dataset.n));
+  $('#folders').querySelectorAll('.fgh').forEach(h => {
+    h.onclick = () => {
+      const g = h.parentElement.dataset.g;
+      openGroups[g] = !isOpen(g); saveGroups(); renderFolders();
+    };
+    h.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); h.click(); } };
+  });
+  const on = $('#folders .fo.on');
+  if (on) on.scrollIntoView({block: 'nearest'});
 }
+$('#fo-all').onclick = () => {
+  const keys = allKeys(folderTree());
+  const open = keys.some(k => !isOpen(k));
+  keys.forEach(k => { openGroups[k] = open; });
+  saveGroups(); renderFolders();
+};
 
 async function selectFolder(name) {
   folder = name;
@@ -594,6 +699,8 @@ function renderGrid() {
         <span class="dot ${f.status}" title="${gone ? 'deleted - was ' + f.was : f.status}"></span>
         <span class="cn" title="${esc(f.name)}">${esc(f.name)}</span>
         <span class="cb">${f.boxes || ''}</span>
+        <span class="lst ${f.status}">${STATUS_LABEL[f.status] || f.status}</span>
+        <span class="lbx">${f.boxes ? `${f.boxes} box${f.boxes === 1 ? '' : 'es'}` : '—'}</span>
       </div>
       <div class="cc">${gone
         ? `<span class="mini gone" title="Deleted at ${clock(f.deleted_at)}">was ${f.was} · ${clock(f.deleted_at)}</span>` : ''}${

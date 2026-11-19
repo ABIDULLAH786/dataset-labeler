@@ -196,12 +196,13 @@ path, but this server runs on the same machine, so it opens the dialog itself. A
 be pasted.
 
 Every directory reports how many images it holds, how many are already labelled and which layout
-it is, so you can tell a dataset folder from its parent before opening it. Both layouts are read
+it is, so you can tell a dataset folder from its parent before opening it. All three layouts are read
 and written **in place**:
 
 ```
 images/ + labels/     <folder>/images/*.jpg   with   <folder>/labels/*.txt
 flat                  <folder>/*.jpg          with   <folder>/*.txt beside them
+by category           <folder>/images/bird/*.jpg   with   <folder>/labels/bird/*.txt
 ```
 
 **A folder with images and no label files at all is fine.** Every frame starts as

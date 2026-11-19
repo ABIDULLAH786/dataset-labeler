@@ -137,6 +137,51 @@ button,input,select,textarea{font:inherit;color:inherit}
 
 /* ---------------------------------------------------------------- folders */
 #folders{flex:1;overflow:auto;min-height:0}
+.ph .n,.foall{white-space:nowrap}
+.foall{background:none;border:none;color:var(--muted);font-size:10.5px;cursor:pointer;
+  padding:0 0 0 8px;text-transform:none;letter-spacing:0;font-family:inherit}
+.foall:hover{color:var(--fg);text-decoration:underline}
+/* one dataset: a header that opens and closes, and its image folders under it */
+.fg{border-bottom:1px solid var(--line)}
+.fg .fg{border-bottom:none;border-top:1px solid var(--line)}
+/* --d is the depth: 0 dataset, 1 split, 2 folder. Each level steps in by 16 px. */
+.fgh{display:grid;grid-template-columns:14px minmax(0,1fr) auto;align-items:center;column-gap:6px;
+  padding:9px 12px 9px calc(10px + var(--d) * 16px);cursor:pointer;user-select:none;font-size:13px;font-weight:650}
+.fg .fg > .fgh{font-weight:600;font-size:12.5px;padding-top:7px;padding-bottom:7px}
+.fgh:hover{background:var(--panel2)}
+.fgh small{grid-column:2 / -1;font-size:10.5px;color:var(--dim);font-family:var(--mono);font-weight:400;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fgn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fgc{font-family:var(--mono);font-size:10.5px;font-weight:400;color:var(--muted);background:var(--raise);
+  border-radius:999px;padding:1px 7px}
+.chev{width:14px;height:14px;fill:none;stroke:var(--muted);stroke-width:2.2;stroke-linecap:round;
+  stroke-linejoin:round;transition:transform .12s}
+.fg.open > .fgh .chev{transform:rotate(90deg)}
+.fgh:focus-visible{outline:2px solid var(--accent-edge);outline-offset:-2px}
+/* The dataset you are working in is marked the same way as the folder itself - a yellow fill
+ * and a 4px bar - so it reads as "you are here" whether the section is open or closed. Closed,
+ * it also names the open folder, so the answer is on screen instead of behind a click. Child
+ * combinators throughout: only the sections on the path to the open folder light up. */
+.fg.here{box-shadow:inset 4px 0 0 var(--accent-edge)}
+.fg .fg.here{box-shadow:none}
+.fg.here > .fgh{background:var(--accent-soft)}
+.fg.here > .fgh{box-shadow:inset 4px 0 0 var(--accent-edge)}   /* the bar, on the heading itself too */
+.fg.here > .fgh:hover{background:#fff0bf}
+.fg.here > .fgh .fgn{color:#5c4700}
+.fg.here > .fgh .chev{stroke:#8a6d00}
+.fg.here > .fgh small{color:#8a7a3a}
+.fg.here > .fgh .fgc{background:#f7e3a0;color:#6b5500}
+.fg.here.open > .fgh{background:#fffaea}
+.fgcur{grid-column:2 / -1;justify-self:start;margin-top:4px;font-family:var(--mono);font-size:10.5px;
+  font-weight:650;color:var(--accent-ink);background:var(--accent);border-radius:4px;padding:1px 7px;
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fgcur::before{content:"\25B8  "}
+.fgb{display:none}
+.fg.open > .fgb{display:block}
+/* a folder row inside a section, indented one step past its section's chevron */
+.fg .fo{padding-left:calc(14px + var(--d) * 16px + 6px);border-bottom:none;border-top:1px solid var(--line)}
+.fon{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fo small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fo{padding:9px 14px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px}
 .fo:hover{background:var(--panel2)}
 .fo.on{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent-edge);font-weight:650}
@@ -198,15 +243,29 @@ button,input,select,textarea{font:inherit;color:inherit}
   font-weight:650;white-space:nowrap}
 .mini.warn{background:var(--accent-soft);color:#8a6d00;font-weight:500}
 
-/* list rows keep the same preview, laid out across instead of stacked */
-#grid.list .card{display:flex;align-items:center;gap:12px;padding:7px 11px 7px 40px;
-  contain-intrinsic-size:auto 58px}
-#grid.list .ci{width:92px;height:52px;flex:none;aspect-ratio:auto;border-radius:4px;
+/* list rows keep the same preview, laid out across instead of stacked: picture, name, state in
+ * words, box count, classes. flex:none matters - cards carry content-visibility:auto, which
+ * lets a flex column squash each row to a 16 px sliver and clip the picture away. */
+#grid.list .card{display:flex;flex:none;align-items:center;gap:16px;padding:8px 14px 8px 42px;
+  contain-intrinsic-size:auto 88px}
+#grid.list .ci{width:128px;height:72px;flex:none;aspect-ratio:auto;border-radius:5px;
   overflow:hidden;background:var(--raise)}
-#grid.list .cm{flex:1;min-width:0;padding:0;font-size:12px;height:auto}
-#grid.list .cn{direction:ltr}
-#grid.list .cc{padding:0;height:auto;flex:none}
-#grid.list .cbox{top:50%;left:11px;transform:translateY(-50%);background:none;box-shadow:none}
+#grid.list .ci img{object-fit:contain}   /* never crop: a box at the edge must stay visible */
+#grid.list .cm{flex:1;min-width:0;padding:0;font-size:12.5px;height:auto;gap:12px}
+#grid.list .cn{direction:ltr;color:var(--fg);flex:1;min-width:0}
+#grid.list .cb{display:none}
+#grid.list .cc{padding:0;height:auto;flex:0 1 auto;max-width:34%;justify-content:flex-end;overflow:visible}
+#grid.list .cbox{top:50%;left:13px;transform:translateY(-50%);background:none;box-shadow:none}
+.lst,.lbx{display:none}
+#grid.list .lst{display:inline-block;flex:none;width:92px;font-family:inherit;font-size:11.5px;
+  font-weight:600;padding:2px 9px;border-radius:999px;text-align:center;background:var(--raise);color:var(--muted)}
+#grid.list .lst.annotated{background:#e3f5ea;color:#17703f}
+#grid.list .lst.unassigned{background:#fdeceb;color:#a3352a}
+#grid.list .lst.null{background:#eef1f4;color:#55606e}
+#grid.list .lst.rejected{background:#f3e3e1;color:#7c3b34}
+#grid.list .lst.deleted{background:#f7c9c3;color:#8c2a20}
+#grid.list .lbx{display:inline-block;flex:none;width:64px;text-align:right;color:#8a6d00;font-weight:700}
+#grid.list .card.deleted .lbx{color:#9a3a30}
 
 .dot{width:8px;height:8px;border-radius:50%;flex:none}
 .dot.annotated{background:var(--good)}
