@@ -257,15 +257,55 @@ $('#pathbox').addEventListener('keydown', async e => {
 });
 
 /* ---------------------------------------------------------------- classes */
+/* The class new boxes are drawn in is remembered per folder. It used to start at class 0 on
+ * every load, so after a reload a run of birds was quietly saved as "drone" until someone
+ * noticed. */
+const classKey = () => 'dl-class:' + (root || '');
+function savedClass() {
+  try { const v = localStorage.getItem(classKey()); return v === null ? null : +v; } catch { return null; }
+}
 async function loadClasses() {
   const r = await api('/api/classes');
   classes = r.classes;
+  const kept = savedClass();
+  if (kept !== null && kept >= 0 && kept < classes.length) activeClass = kept;
   if (activeClass >= classes.length) activeClass = 0;
   classHi = activeClass;
   renderClassBar();
   renderClassList();
 }
 
+/* ---- recent classes: the last few picked, per folder, shown first wherever a class is chosen */
+const recentKey = () => 'dl-recent:' + (root || '');
+function recentClasses() {
+  try { return (JSON.parse(localStorage.getItem(recentKey()) || '[]')).filter(i => i < classes.length); }
+  catch { return []; }
+}
+function pushRecent(id) {
+  const r = [id, ...recentClasses().filter(x => x !== id)].slice(0, 5);
+  try { localStorage.setItem(recentKey(), JSON.stringify(r)); } catch {}
+}
+
+/* The classes to show for a search, as [{section, ids}]. With a handful of classes there is one
+ * plain list in class order; with many, recent ones come first so the usual pick is near the
+ * top, and typing narrows the whole list by name. */
+const MANY = 5;                                  // up to 5 classes: a plain list; from 6, search + recent
+function classSections(q) {
+  q = (q || '').trim().toLowerCase();
+  if (q) {
+    const hit = classes.filter(c => c.name.toLowerCase().includes(q))
+      .sort((a, b) => a.name.toLowerCase().indexOf(q) - b.name.toLowerCase().indexOf(q) || a.id - b.id);
+    return [{section: `${hit.length} match${hit.length === 1 ? '' : 'es'}`, ids: hit.map(c => c.id)}];
+  }
+  if (classes.length <= MANY) return [{section: '', ids: classes.map(c => c.id)}];
+  const rec = recentClasses();
+  return [...(rec.length ? [{section: 'Recent', ids: rec}] : []),
+          {section: `All ${classes.length} classes`, ids: classes.map(c => c.id)}];
+}
+const keyHint = id => id < 8 ? String(id + 2) : '';
+
+/* Header: one class picker beside "Classes", however many classes there are. It shows the class
+ * new boxes get, and opens a searchable list (also on the C key while annotating). */
 function renderClassBar() {
   if (!classes.length) {
     $('#classbar').innerHTML =
@@ -275,21 +315,128 @@ function renderClassBar() {
       $('#classfilter') && $('#classfilter').focus();
       $('#editclasses').click();
     };
+    renderDrawAs();
     return;
   }
-  $('#classbar').innerHTML = classes.slice(0, 8).map(c =>
-    `<button class="chip${c.id === activeClass ? ' on' : ''}" data-c="${c.id}"
-       style="--c:${c.color}" title="${esc(c.name)} — class ${c.id}">
-       <i></i>${esc(c.name)}<b>${c.id}</b></button>`).join('');
-  $('#classbar').querySelectorAll('.chip').forEach(b =>
-    b.onclick = () => setActiveClass(+b.dataset.c));
+  const c = classes[activeClass] || classes[0];
+  if (!$('#cp-btn')) {
+    $('#classbar').innerHTML = `
+      <div class="classpick">
+        <button id="cp-btn" class="cpbtn" aria-haspopup="listbox" aria-expanded="false"
+                title="Class for new boxes - click or press C to change"><i></i><span></span>
+          <svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+        <div id="cp-pop" class="cppop" hidden>
+          <input id="cp-q" class="inp" placeholder="Search classes…" autocomplete="off" spellcheck="false">
+          <div id="cp-list" role="listbox" aria-label="Classes" tabindex="0"></div>
+          <div class="cpfoot"><span>↑↓ move · Enter pick · Esc close</span>
+            <button id="cp-manage" type="button">Manage…</button></div>
+        </div>
+      </div>`;
+    $('#cp-btn').onclick = () => $('#cp-pop').hidden ? openClassPick() : closeClassPick();
+    $('#cp-q').oninput = () => { cpHi = 0; renderClassPick(); };
+    $('#cp-q').onkeydown = classPickKeys;
+    $('#cp-list').onkeydown = classPickKeys;
+    $('#cp-manage').onclick = () => { closeClassPick(); $('#editclasses').click(); };
+    document.addEventListener('mousedown', e => {
+      if (!e.target.closest('.classpick')) closeClassPick();
+    }, true);
+  }
+  const btn = $('#cp-btn');
+  btn.style.setProperty('--c', c.color);
+  btn.querySelector('span').textContent = c.name;
+  if (!$('#cp-pop').hidden) renderClassPick();
+  renderDrawAs();
 }
 
-function setActiveClass(id) {
+let cpHi = 0;                                   // highlighted row in the open picker
+function pickIds() { return [...new Set(classSections($('#cp-q').value).flatMap(s => s.ids))]; }
+function renderClassPick() {
+  const ids = pickIds();
+  cpHi = Math.max(0, Math.min(cpHi, ids.length - 1));
+  let n = 0;
+  $('#cp-list').innerHTML = classSections($('#cp-q').value).map(sec =>
+    (sec.section ? `<div class="cpsec">${esc(sec.section)}</div>` : '') +
+    sec.ids.map(id => {
+      const c = classes[id], k = keyHint(id), mine = n++;
+      return `<div class="cprow${id === activeClass ? ' cur' : ''}${ids[cpHi] === id && mine === firstIndex(id) ? ' hi' : ''}"
+                   role="option" aria-selected="${id === activeClass}" data-c="${id}">
+                <i style="--c:${c.color}"></i><span>${esc(c.name)}</span>${k ? `<kbd>${k}</kbd>` : ''}</div>`;
+    }).join('')).join('') || '<div class="cpnone">No class matches</div>';
+  $('#cp-list').querySelectorAll('.cprow').forEach(r => r.onclick = () => {
+    setActiveClass(+r.dataset.c); closeClassPick();
+  });
+  const hi = $('#cp-list .cprow.hi');
+  if (hi) hi.scrollIntoView({block: 'nearest'});
+}
+// a class can appear twice (Recent and All); only its first row is highlighted
+function firstIndex(id) {
+  let n = 0;
+  for (const sec of classSections($('#cp-q').value)) for (const x of sec.ids) { if (x === id) return n; n++; }
+  return -1;
+}
+function openClassPick() {
+  if (!classes.length || !$('#cp-pop')) return;
+  closeBoxMenu();
+  $('#cp-pop').hidden = false;
+  $('#cp-btn').setAttribute('aria-expanded', 'true');
+  $('#cp-q').value = '';
+  $('#cp-q').classList.toggle('hidden', classes.length <= MANY);
+  cpHi = Math.max(0, pickIds().indexOf(activeClass));
+  renderClassPick();
+  (classes.length > MANY ? $('#cp-q') : $('#cp-list')).focus();
+}
+function closeClassPick() {
+  const pop = $('#cp-pop');
+  if (!pop || pop.hidden) return;
+  // focus left inside the hidden list would swallow every shortcut after it: give it back
+  const hadFocus = pop.contains(document.activeElement);
+  pop.hidden = true;
+  $('#cp-btn').setAttribute('aria-expanded', 'false');
+  if (hadFocus) $('#cp-btn').focus({preventScroll: true});
+}
+function classPickKeys(e) {
+  e.stopPropagation();                           // keys belong to the picker while it is open
+  const ids = pickIds();
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault(); e.stopPropagation();
+    cpHi = (cpHi + (e.key === 'ArrowDown' ? 1 : -1) + ids.length) % Math.max(1, ids.length);
+    renderClassPick();
+  } else if (e.key === 'Enter') {
+    e.preventDefault(); e.stopPropagation();
+    if (ids.length) { setActiveClass(ids[cpHi]); closeClassPick(); }
+  } else if (e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation(); closeClassPick();
+  }
+}
+
+// Always on screen, on the canvas toolbar: the class the next box will get.
+function renderDrawAs() {
+  const el = $('#drawas');
+  if (!el) return;
+  const c = classes[activeClass];
+  el.classList.toggle('hidden', !c);
+  if (!c) return;
+  el.style.setProperty('--c', c.color);
+  el.querySelector('span').textContent = c.name;
+}
+
+// `how` is 'key' when a shortcut did it: a change you did not look at is announced.
+function setActiveClass(id, how) {
+  const was = activeClass;
   activeClass = id; classHi = id;
+  try { localStorage.setItem(classKey(), String(id)); } catch {}
+  pushRecent(id);
   renderClassBar(); renderClassList();
+  let boxChanged = false;
   if (sel >= 0 && boxes[sel][4] !== id) {
     remember(); boxes[sel][4] = id; dirty = true; renderBoxes(); render();
+    boxChanged = true;
+  }
+  if (how === 'key' && (was !== id || boxChanged))
+    toast(boxChanged ? `Selected box is now ${nameOf(id)} — new boxes too` : `New boxes: ${nameOf(id)}`);
+  if (was !== id) {
+    const el = $('#drawas');
+    if (el) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
   }
 }
 
@@ -297,7 +444,7 @@ function renderClassList() {
   const q = ($('#classfilter').value || '').toLowerCase();
   const hits = classes.filter(c => c.name.toLowerCase().includes(q));
   const mk = c => `<div class="cl${c.id === classHi ? ' hi' : ''}${c.id === activeClass ? ' act' : ''}"
-       data-c="${c.id}" style="--c:${c.color}"><i></i>${esc(c.name)}<b>${c.id}</b></div>`;
+       data-c="${c.id}" style="--c:${c.color}" title="class ${c.id}${c.id < 8 ? ` · key ${c.id + 2}` : ''}"><i></i>${esc(c.name)}</div>`;
   let html = hits.map(mk).join('');
   if (q && !classes.some(c => c.name.toLowerCase() === q))
     html += `<div class="cl create" data-new="1">+ create class “${esc($('#classfilter').value)}”</div>`;
@@ -904,28 +1051,56 @@ async function refreshFolderCounts() {
 /* ---------------------------------------------------------------- annotate */
 function isCheck(f) { return /CHECK/i.test(f.note || ''); }
 
-function renderFrameList() {
-  $('#fcount').textContent = frames.length ? `${frames.length}` : '';
-  $('#frames').innerHTML = frames.map(f =>
-    `<div class="fr${f.name === cur ? ' on' : ''}${f.status === 'deleted' ? ' deleted' : ''}" data-n="${esc(f.name)}">
+/* Each row carries the colour of the class(es) labelled in it - a bird frame reads green, a
+ * drone frame yellow - so a frame saved under the wrong class stands out in the list without
+ * opening it. Several classes: the stripe is split between their colours and every class is
+ * named. */
+function frameRow(f) {
+  const ids = f.status === 'deleted' ? [] : (f.classes || []);
+  const cols = ids.map(colorOf);
+  const stripe = cols.length > 1
+    ? `--stripe:linear-gradient(${cols.map((c, i) =>
+        `${c} ${i * 100 / cols.length}% ${(i + 1) * 100 / cols.length}%`).join(',')})` : '';
+  const names = ids.map(nameOf);
+  const tags = ids.slice(0, 2).map(i =>
+    `<span class="ftag" style="--c:${colorOf(i)}">${esc(nameOf(i))}</span>`).join('') +
+    (ids.length > 2 ? `<span class="ftag more">+${ids.length - 2}</span>` : '');
+  return `<div class="fr${f.name === cur ? ' on' : ''}${f.status === 'deleted' ? ' deleted' : ''}${
+           ids.length ? ' tinted' : ''}" data-n="${esc(f.name)}"
+           style="${ids.length ? `--c:${cols[0]};` : ''}${stripe}"
+           title="${esc(f.name)}${names.length ? ' — ' + names.join(', ') : ''}">
        <span class="dot ${f.status}"></span>
        <span class="fn">${esc(f.name)}</span>
        ${isCheck(f) ? '<span class="chk">!</span>' : ''}
+       ${tags}
        <span class="cnt">${f.boxes || ''}</span>
-     </div>`).join('');
+     </div>`;
+}
+
+function renderFrameList() {
+  $('#fcount').textContent = frames.length ? `${frames.length}` : '';
+  $('#frames').innerHTML = frames.map(frameRow).join('');
   $('#frames').querySelectorAll('.fr').forEach(d =>
     d.onclick = () => openFrame(d.dataset.n));
   const on = $('#frames .fr.on');
   if (on) on.scrollIntoView({block: 'nearest'});
 }
 
+/* Every request to open a frame gets a number, and only the newest one may touch the screen.
+ * Responses can come back out of order - the server answers in parallel - and a slow, older
+ * frame used to land last: its boxes then sat under the newer frame's name, and the next save
+ * wrote them into the wrong label file. */
+let openSeq = 0;
 async function openFrame(name, skipSave) {
+  const seq = ++openSeq;
   if (dirty && cur && !skipSave) await save(true);
+  if (seq !== openSeq) return;                   // a later frame was asked for meanwhile
   closeBoxMenu();
   cur = name;
   setView('annotate');
   renderFrameList();
   const d = await api(`/api/label?folder=${encodeURIComponent(folder)}&name=${encodeURIComponent(name)}`);
+  if (seq !== openSeq || cur !== name) return;   // stale answer: drop it
   iw = d.w; ih = d.h;
   boxes = d.boxes.map(b => [b.x0, b.y0, b.x1, b.y1, b.cls]);
   sel = -1; cands = []; candHi = -1; dirty = false;
@@ -941,7 +1116,7 @@ async function openFrame(name, skipSave) {
   $('#cands').innerHTML = '<div class="empty">Press <b>A</b> to run the detectors.</div>';
   renderBoxes();
   img = new Image();
-  img.onload = () => { fitView(); render(); syncZoom(); };
+  img.onload = () => { if (seq === openSeq) { fitView(); render(); syncZoom(); } };
   img.src = imgUrl(name);
 }
 
@@ -1023,6 +1198,22 @@ function hitHandle(px, py) {
 const colorOf = i => (classes[i] && classes[i].color) || '#ff4d4d';
 const nameOf = i => (classes[i] && classes[i].name) || ('class ' + i);
 
+/* Outlines sit 2 px OUTSIDE a box so the line never hides the target's own edge pixels - on a
+ * 6 px drone that is half of it. At the image border there is no outside, and the line used to
+ * land on the grey canvas, as if the box reached past the picture. So the padded rectangle is
+ * held inside the image's on-screen bounds: the line stays on the picture, always. */
+function imageRectOnScreen() {
+  const [L, T] = toScr(0, 0), [R, B] = toScr(iw, ih);
+  return {L, T, R, B};
+}
+function outline(x0, y0, x1, y1, lw, pad = 2) {
+  const {L, T, R, B} = imageRectOnScreen(), h = lw / 2;
+  const a = Math.max(x0 - pad, L + h), b = Math.max(y0 - pad, T + h);
+  const c = Math.min(x1 + pad, R - h), d = Math.min(y1 + pad, B - h);
+  ctx.strokeRect(a, b, Math.max(0, c - a), Math.max(0, d - b));
+  return {a, b, c, d};
+}
+
 function render() {
   const [W, H] = stageSize();
   if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
@@ -1038,7 +1229,7 @@ function render() {
     ctx.strokeStyle = i === candHi ? '#e0ae00' : 'rgba(224,174,0,.55)';
     ctx.lineWidth = i === candHi ? 2 : 1;
     ctx.setLineDash(i === candHi ? [] : [3, 3]);
-    ctx.strokeRect(x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4);
+    outline(x0, y0, x1, y1, ctx.lineWidth);
   });
   ctx.setLineDash([]);
 
@@ -1047,14 +1238,17 @@ function render() {
     const col = colorOf(b[4]);
     ctx.strokeStyle = i === sel ? '#1b2230' : col;
     ctx.lineWidth = i === sel ? 3 : 2.5;           // bold enough to read on any background
-    ctx.strokeRect(x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4);
+    const o = outline(x0, y0, x1, y1, ctx.lineWidth);
     ctx.font = 'bold 11px ui-monospace,monospace';
     const tag = `${nameOf(b[4])} ${Math.round(b[2] - b[0])}×${Math.round(b[3] - b[1])}`;
     const tw = ctx.measureText(tag).width + 6;
+    // the tag sits above the box; when that would be above the picture, it tucks inside instead
+    const {T: imgTop} = imageRectOnScreen();
+    const ty = o.b - 16 >= imgTop ? o.b - 16 : o.b + 2;
     ctx.fillStyle = col;
-    ctx.fillRect(x0 - 2, y0 - 18, tw, 14);
+    ctx.fillRect(o.a - 1, ty, tw, 14);
     ctx.fillStyle = '#10141a';
-    ctx.fillText(tag, x0 + 1, y0 - 7);
+    ctx.fillText(tag, o.a + 2, ty + 11);
     if (i === sel) {
       const hp = handlePoints(b);
       ctx.fillStyle = '#1b2230';
@@ -1069,7 +1263,12 @@ function render() {
 
   if (draw_) {
     ctx.strokeStyle = colorOf(activeClass); ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
-    ctx.strokeRect(draw_.sx, draw_.sy, draw_.cx - draw_.sx, draw_.cy - draw_.sy);
+    // the preview shows the box that will be made, which is clipped to the picture
+    const {L, T, R, B} = imageRectOnScreen();
+    const cl = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+    const px0 = cl(Math.min(draw_.sx, draw_.cx), L, R), px1 = cl(Math.max(draw_.sx, draw_.cx), L, R);
+    const py0 = cl(Math.min(draw_.sy, draw_.cy), T, B), py1 = cl(Math.max(draw_.sy, draw_.cy), T, B);
+    ctx.strokeRect(px0 + .5, py0 + .5, Math.max(0, px1 - px0 - 1), Math.max(0, py1 - py0 - 1));
     ctx.setLineDash([]);
   }
   drawGuides();
@@ -1263,22 +1462,53 @@ stage.addEventListener('mousemove', e => {
  * smallest. Right-click elsewhere on the picture does nothing (and no browser menu). */
 const boxMenu = $('#boxmenu');
 
+/* While the menu is open it is the only thing that responds. A veil over the rest of the page
+ * dims it and takes the mouse: a click there only closes the menu (it can no longer start a box
+ * or press a button on its way), and the wheel there does nothing - over the menu it scrolls
+ * the class list instead of zooming the picture behind it. */
+const menuVeil = document.createElement('div');
+menuVeil.id = 'menuveil';
+menuVeil.hidden = true;
+document.body.appendChild(menuVeil);
+const swallow = e => { e.preventDefault(); e.stopPropagation(); };
+menuVeil.addEventListener('mousedown', e => { swallow(e); closeBoxMenu(); });
+menuVeil.addEventListener('contextmenu', e => { swallow(e); closeBoxMenu(); });
+menuVeil.addEventListener('wheel', swallow, {passive: false});
+
 function closeBoxMenu() {
   if (boxMenu.hidden) return;
   boxMenu.hidden = true; boxMenu.innerHTML = '';
+  menuVeil.hidden = true;
+}
+
+let menuBox = -1;                                // the box the open menu acts on
+
+function menuClassRows() {
+  const q = boxMenu.querySelector('.mq');
+  const cur = boxes[menuBox] ? boxes[menuBox][4] : -1;
+  const seen = new Set();
+  return classSections(q ? q.value : '').map(sec =>
+    (sec.section && classes.length > MANY ? `<div class="mls">${esc(sec.section)}</div>` : '') +
+    sec.ids.map(ci => {
+      const dup = seen.has(ci); seen.add(ci);
+      return `<button data-a="cls" data-c="${ci}" class="${ci === cur ? 'cur' : ''}${dup ? ' dup' : ''}" role="menuitemradio">
+                <span class="sw" style="--c:${colorOf(ci)}"></span><span class="mn">${esc(classes[ci].name)}</span></button>`;
+    }).join('')).join('') || '<div class="mnone">No class matches</div>';
 }
 
 function openBoxMenu(i, px, py) {
   const b = boxes[i];
+  menuBox = i;
+  const many = classes.length > MANY;
   const item = (act, label, key, cls = '') =>
     `<button data-a="${act}" class="${cls}" role="menuitem">${label}${
       key ? `<span class="k">${key}</span>` : ''}</button>`;
   boxMenu.innerHTML =
     `<div class="mh">${esc(nameOf(b[4]))} ${Math.round(b[2] - b[0])}×${Math.round(b[3] - b[1])}</div>` +
     (classes.length > 1
-      ? '<div class="ml">Class</div>' + classes.map((c, ci) =>
-          `<button data-a="cls" data-c="${ci}" class="${ci === b[4] ? 'cur' : ''}" role="menuitemradio">
-             <span class="sw" style="--c:${colorOf(ci)}"></span>${esc(c.name)}</button>`).join('') +
+      ? '<div class="ml">Class</div>' +
+        (many ? `<input class="mq inp" placeholder="Search ${classes.length} classes…" autocomplete="off" spellcheck="false">` : '') +
+        `<div class="mlist${many ? ' scroll' : ''}">${menuClassRows()}</div>` +
         '<div class="ms"></div>'
       : '') +
     item('dup', 'Duplicate') +
@@ -1289,40 +1519,53 @@ function openBoxMenu(i, px, py) {
 
   // Show it beside the pointer, flipped to stay inside the picture area.
   $('#loupe').style.display = 'none';
+  closeClassPick();
+  menuVeil.hidden = false;
   boxMenu.hidden = false;
   const W = cv.width, H = cv.height, mw = boxMenu.offsetWidth, mh = boxMenu.offsetHeight;
   boxMenu.style.left = Math.max(4, px + mw + 4 > W ? px - mw : px) + 'px';
-  boxMenu.style.top = Math.max(4, py + mh + 4 > H ? py - mh : py) + 'px';
+  boxMenu.style.top = Math.max(4, Math.min(py + mh + 4 > H ? py - mh : py, H - mh - 4)) + 'px';
 
-  boxMenu.querySelectorAll('button').forEach(btn => btn.onclick = e => {
-    e.stopPropagation();
-    const a = btn.dataset.a;
-    closeBoxMenu();
-    if (i >= boxes.length) return;
-    if (a === 'del') {
-      remember(); boxes.splice(i, 1); sel = -1; dirty = true;
-    } else if (a === 'cls') {
-      const c = +btn.dataset.c;
-      if (c !== boxes[i][4]) { remember(); boxes[i][4] = c; dirty = true; classHi = c; renderClassList(); }
-    } else if (a === 'dup') {
-      // a copy nudged down-right so it is visible, kept inside the image
-      remember(); boxes.push(shiftInside(boxes[i].slice(), 8 / viewport.s, 8 / viewport.s));
-      sel = boxes.length - 1; dirty = true;
-    } else if (a === 'zoom') {
-      const [W2, H2] = stageSize(), bb = boxes[i];
-      const s = Math.min(W2 / (bb[2] - bb[0]), H2 / (bb[3] - bb[1])) * 0.5;
-      viewport.s = Math.max(0.02, Math.min(80, s));
-      viewport.x = W2 / 2 - (bb[0] + bb[2]) / 2 * viewport.s;
-      viewport.y = H2 / 2 - (bb[1] + bb[3]) / 2 * viewport.s;
-      syncZoom();
-    } else if (a === 'desel') {
-      sel = -1;
-    }
-    renderBoxes(); render();
-  });
-  const first = boxMenu.querySelector('button');
-  if (first) first.focus({preventScroll: true});
+  const q = boxMenu.querySelector('.mq');
+  if (q) {
+    q.oninput = () => { boxMenu.querySelector('.mlist').innerHTML = menuClassRows(); };
+    q.focus({preventScroll: true});              // many classes: type straight away
+  } else {
+    const first = boxMenu.querySelector('button');
+    if (first) first.focus({preventScroll: true});
+  }
 }
+
+// One handler for every row, including class rows redrawn by the search.
+boxMenu.addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  e.stopPropagation();
+  const a = btn.dataset.a, i = menuBox;
+  closeBoxMenu();
+  if (i < 0 || i >= boxes.length) return;
+  if (a === 'del') {
+    remember(); boxes.splice(i, 1); sel = -1; dirty = true;
+  } else if (a === 'cls') {
+    const c = +btn.dataset.c;
+    pushRecent(c);
+    if (c !== boxes[i][4]) { remember(); boxes[i][4] = c; dirty = true; classHi = c; renderClassList(); }
+  } else if (a === 'dup') {
+    // a copy nudged down-right so it is visible, kept inside the image
+    remember(); boxes.push(shiftInside(boxes[i].slice(), 8 / viewport.s, 8 / viewport.s));
+    sel = boxes.length - 1; dirty = true;
+  } else if (a === 'zoom') {
+    const [W2, H2] = stageSize(), bb = boxes[i];
+    const s = Math.min(W2 / (bb[2] - bb[0]), H2 / (bb[3] - bb[1])) * 0.5;
+    viewport.s = Math.max(0.02, Math.min(80, s));
+    viewport.x = W2 / 2 - (bb[0] + bb[2]) / 2 * viewport.s;
+    viewport.y = H2 / 2 - (bb[1] + bb[3]) / 2 * viewport.s;
+    syncZoom();
+  } else if (a === 'desel') {
+    sel = -1;
+  }
+  renderBoxes(); render();
+});
 
 stage.addEventListener('contextmenu', e => {
   e.preventDefault();                              // never the browser's menu over the picture
@@ -1338,17 +1581,25 @@ stage.addEventListener('contextmenu', e => {
 });
 // Any other click, scroll, Escape or frame change closes it.
 document.addEventListener('mousedown', e => { if (!e.target.closest('#boxmenu')) closeBoxMenu(); }, true);
-stage.addEventListener('wheel', closeBoxMenu, {passive: true});
 // Keys typed while the menu has focus belong to the menu, not to the frame shortcuts.
 boxMenu.addEventListener('keydown', e => {
   e.stopPropagation();
-  const items = [...boxMenu.querySelectorAll('button')];
+  const inSearch = e.target.classList && e.target.classList.contains('mq');
+  const items = [...boxMenu.querySelectorAll('button:not(.dup)')];
   const at = items.indexOf(document.activeElement);
   if (e.key === 'Escape') { e.preventDefault(); closeBoxMenu(); }
   else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
-    items[(at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
-  } else if (e.key === 'Delete' || e.key === 'Backspace') {
+    const next = inSearch ? (e.key === 'ArrowDown' ? 0 : items.length - 1)
+                          : (at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
+    items[next].scrollIntoView({block: 'nearest'});
+  } else if (inSearch && e.key === 'Enter') {
+    e.preventDefault();
+    const hit = boxMenu.querySelector('[data-a="cls"]');
+    if (hit) hit.click();
+  } else if (!inSearch && (e.key === 'Delete' || e.key === 'Backspace')) {
+    // typed into the search box, Backspace edits the text - it must never delete the box
     e.preventDefault(); boxMenu.querySelector('[data-a="del"]').click();
   }
 });
@@ -1393,6 +1644,7 @@ stage.addEventListener('mouseup', async e => {
  * dropped boxes onto whatever was near a fast pair of clicks. */
 
 stage.addEventListener('wheel', e => {
+  if (e.target.closest('#boxmenu')) return;       // the menu scrolls its own list
   e.preventDefault();
   const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
   const [ix, iy] = toImg(px, py);
@@ -1433,7 +1685,21 @@ function redo() {
   syncUndo(); renderBoxes(); render();
 }
 
+// The open frame's row follows the boxes on screen, so changing a box's class recolours it at once.
+function syncCurRow() {
+  const f = frames.find(x => x.name === cur);
+  if (!f || f.status === 'deleted') return;
+  f.classes = Array.from(new Set(boxes.map(b => b[4]))).sort((a, b) => a - b);
+  f.boxes = boxes.length;
+  const el = [...document.querySelectorAll('#frames .fr')].find(d => d.dataset.n === cur);
+  if (!el) return;
+  el.outerHTML = frameRow(f);
+  const fresh = [...document.querySelectorAll('#frames .fr')].find(d => d.dataset.n === cur);
+  if (fresh) fresh.onclick = () => openFrame(cur);
+}
+
 function renderBoxes() {
+  syncCurRow();
   $('#bcount').textContent = boxes.length || '';
   $('#boxes').innerHTML = boxes.length ? boxes.map((b, i) =>
     `<div class="bx${i === sel ? ' sel' : ''}" data-i="${i}" style="--c:${colorOf(b[4])}">
@@ -1651,7 +1917,12 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape') setView('gallery');
     return;
   }
-  closeBoxMenu();                                  // any shortcut acts on the frame, not the menu
+  // The menu is modal: with it open, only its own keys work (it stops them reaching here
+  // while it has focus). Anything else typed is ignored, except Esc, which closes it.
+  if (!boxMenu.hidden) {
+    if (e.key === 'Escape') { e.preventDefault(); closeBoxMenu(); }
+    return;
+  }
   if (e.code === 'Space') { space = true; idleCursor(e); e.preventDefault(); return; }
   if (e.key === 'Control' || e.key === 'Meta') { if (!draw_ && !grab) idleCursor(e); return; }
   const k = e.key;
@@ -1664,19 +1935,23 @@ document.addEventListener('keydown', e => {
   // browser: Ctrl+Shift+R (hard reload) used to reject the open frame on its way out.
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (k === 'b' || k === 'B') { setTool('draw'); return; }
+  if (k === 'c' || k === 'C') { e.preventDefault(); openClassPick(); return; }
   if (k === 'h' || k === 'H') { setTool('pan'); return; }
 
-  if (k === 'ArrowRight' || k === 'd' || k === 'D') { step(1); return; }
-  if (k === 'ArrowLeft') { step(-1); return; }
+  // One press, one frame. A held key repeats ~30 times a second, and stepping on every repeat
+  // ran 20 frames past in under a second - frames that were then never looked at.
+  if (k === 'ArrowRight' || k === 'd' || k === 'D') { if (!e.repeat) step(1); return; }
+  if (k === 'ArrowLeft') { if (!e.repeat) step(-1); return; }
   if (k === 'ArrowUp' || k === 'ArrowDown') {
     e.preventDefault();
+    if (e.repeat) return;                        // holding it must not spin through classes
     const d = k === 'ArrowDown' ? 1 : -1;
-    setActiveClass((activeClass + d + classes.length) % classes.length);
+    setActiveClass((activeClass + d + classes.length) % classes.length, 'key');
     return;
   }
   if (k >= '2' && k <= '9') {                    // 2..9 pick a class directly
     const i = +k - 2;
-    if (i < classes.length) setActiveClass(i);
+    if (i < classes.length) setActiveClass(i, 'key');
     return;
   }
   if (k === '0') { fitView(); render(); syncZoom(); return; }

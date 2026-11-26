@@ -64,7 +64,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .inp::placeholder{color:var(--dim)}
 
 /* class chips in the header */
-.classbar{display:flex;gap:5px;overflow:auto;max-width:42vw}
+.classbar{display:flex;gap:5px;max-width:42vw}   /* no overflow clip: the class picker drops down out of it */
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel);color:var(--muted);
   border:1px solid var(--line2);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;
   white-space:nowrap;transition:.12s}
@@ -285,7 +285,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .fdel{color:var(--bad)}
 .fr.deleted{background:#fdecea}
 .fr.deleted .fn{color:#9a3a30;text-decoration:line-through;text-decoration-color:#e8a59c}
-.fr.deleted.on{background:#f9d9d4;box-shadow:inset 3px 0 0 var(--bad)}
+.fr.deleted.on{background:#f9d9d4;box-shadow:inset 0 0 0 2px var(--bad)}
 
 .tab.t-deleted.on{border-bottom-color:var(--bad)}
 .tab.t-deleted.on b{background:#fdecea;color:#a3352a}
@@ -333,6 +333,18 @@ button,input,select,textarea{font:inherit;color:inherit}
   border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11.5px}
 .fr:hover{background:var(--panel2)}
 .fr.on{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent-edge);font-weight:600}
+/* a labelled frame: a light wash of its class colour and a 4 px stripe; two classes split it */
+.fr.tinted{background:color-mix(in srgb,var(--c) 13%,#fff);position:relative}
+.fr.tinted::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--stripe,var(--c))}
+.fr.tinted:hover{background:color-mix(in srgb,var(--c) 22%,#fff)}
+/* The open frame is ringed in ink rather than painted yellow - yellow is a class colour now,
+ * and "this is a drone frame" must never be confused with "this is the frame you are on". */
+.fr.on{background:var(--panel);box-shadow:inset 0 0 0 2px var(--fg);font-weight:700}
+.fr.tinted.on{background:color-mix(in srgb,var(--c) 26%,#fff)}
+.ftag{flex:none;font-family:inherit;font-size:9.5px;font-weight:700;line-height:1;padding:3px 6px;
+  border-radius:3px;background:var(--c);color:#10141a;max-width:64px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.ftag.more{background:var(--raise);color:var(--muted)}
 .fn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
 .fr .cnt{color:var(--dim);font-size:11px}
 .fr .chk{color:var(--warn);font-weight:700}
@@ -352,7 +364,7 @@ button,input,select,textarea{font:inherit;color:inherit}
   box-shadow:0 8px 28px rgba(20,30,45,.28)}
 #loupe canvas{border-radius:50%;display:block}
 /* right-click menu on a box */
-#boxmenu{position:absolute;z-index:20;min-width:190px;background:var(--panel);
+#boxmenu{position:absolute;z-index:31;min-width:190px;background:var(--panel);
   border:1px solid var(--line2);border-radius:var(--r);padding:4px;font-size:13px;
   box-shadow:0 6px 24px rgba(20,30,45,.18),0 1px 3px rgba(20,30,45,.1)}
 #boxmenu[hidden]{display:none}
@@ -479,3 +491,62 @@ button,input,select,textarea{font:inherit;color:inherit}
 .keys span{color:var(--muted);flex:1}
 kbd{font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line2);
   border-bottom-width:2px;border-radius:4px;padding:2px 6px;color:var(--fg);white-space:nowrap}
+
+/* "drawing as": the class the next box gets, beside the box tool, in the class's own colour */
+#drawas{display:inline-flex;align-items:center;gap:6px;margin-left:4px;padding:4px 10px 4px 8px;
+  border-radius:999px;font-size:12px;font-weight:650;color:var(--fg);white-space:nowrap;
+  background:color-mix(in srgb,var(--c) 18%,#fff);border:1px solid color-mix(in srgb,var(--c) 55%,#fff)}
+#drawas i{width:9px;height:9px;border-radius:50%;background:var(--c)}
+#drawas.hidden{display:none}
+#drawas.flash{animation:drawas-flash .9s ease-out}
+@keyframes drawas-flash{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--c) 70%,transparent)}
+  100%{box-shadow:0 0 0 9px transparent}}
+@media (prefers-reduced-motion:reduce){#drawas.flash{animation:none}}
+
+/* ---------------------------------------------------------------- class picker (header)
+ * One control however many classes there are: the class new boxes get, filled in its colour,
+ * opening a searchable list. Recent classes come first once there are more than five. */
+.classpick{position:relative}
+.cpbtn{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 9px 0 11px;border-radius:999px;
+  border:1px solid transparent;background:var(--c);color:#1b2230;font-weight:650;font-size:13px;cursor:pointer;
+  max-width:220px}
+.cpbtn i{width:9px;height:9px;border-radius:50%;background:#1b2230;opacity:.35;flex:none}
+.cpbtn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cpbtn .caret{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;
+  stroke-linejoin:round;flex:none;opacity:.7}
+.cpbtn:hover{filter:brightness(.96)}
+.cpbtn:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+.cppop{position:absolute;right:0;top:calc(100% + 6px);z-index:60;width:290px;background:var(--panel);
+  border:1px solid var(--line2);border-radius:8px;box-shadow:0 8px 28px rgba(20,30,45,.18);padding:8px}
+.cppop[hidden]{display:none}
+.cppop .inp{width:100%;margin-bottom:6px}
+.cppop .inp.hidden{display:none}
+#cp-list{max-height:320px;overflow:auto;outline:none}
+.cpsec{padding:8px 8px 3px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.cprow{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:5px;cursor:pointer;font-size:13px}
+.cprow i{width:10px;height:10px;border-radius:3px;background:var(--c);flex:none}
+.cprow span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cprow kbd{font-family:var(--mono);font-size:10.5px;color:var(--dim);border:1px solid var(--line2);
+  border-radius:3px;padding:0 5px;background:var(--panel2)}
+.cprow:hover,.cprow.hi{background:var(--panel2)}
+.cprow.hi{box-shadow:inset 0 0 0 1px var(--line2)}
+.cprow.cur{font-weight:650}
+.cprow.cur span::after{content:"  ✓";color:var(--muted)}
+.cpnone,.mnone{padding:10px 8px;color:var(--dim);font-size:12.5px}
+.cpfoot{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid var(--line);
+  margin-top:6px;padding:7px 4px 0;font-size:11px;color:var(--dim)}
+.cpfoot button{background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:2px 4px}
+.cpfoot button:hover{color:var(--fg);text-decoration:underline}
+
+/* box menu with many classes: a search field and a short scrolling list */
+#boxmenu .mq{display:block;width:calc(100% - 12px);margin:2px 6px 4px;height:28px;font-size:12.5px}
+#boxmenu .mlist.scroll{max-height:196px;overflow:auto}
+#boxmenu .mls{padding:5px 10px 2px;font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
+#boxmenu .mn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+#boxmenu{max-width:260px}
+
+/* behind an open box menu: the rest of the page, dimmed and unclickable */
+#menuveil{position:fixed;inset:0;z-index:30;background:rgba(16,22,32,.14)}
+#menuveil[hidden]{display:none}
+/* the class list scrolls on its own; reaching its end never scrolls anything behind it */
+#boxmenu .mlist.scroll{overscroll-behavior:contain}
