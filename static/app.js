@@ -1770,28 +1770,84 @@ async function save(quiet) {
 let aiSources = {model: {ok: false, why: ''}, coco: {ok: false, why: ''}};
 let aiUse = (() => { try { return localStorage.getItem('dl-aisrc') || 'all'; } catch { return 'all'; } })();
 
-function renderAiSources() {
-  const m = aiSources.model, c = aiSources.coco;
-  const opts = [
-    ['all', 'All sources', true, 'Your model, COCO, motion and contrast - model results listed first'],
-    ['model', m.ok ? `Your model · ${m.name}` : `Your model — ${m.why}`, m.ok,
-     m.ok ? `Only ${m.name} (${m.from === 'given' ? 'given with --model' : 'from model/'})` : m.why],
-    ['coco', c.ok ? `COCO default${c.downloaded ? '' : ' · downloads ~40 MB once'}` : `COCO — ${c.why}`, c.ok,
-     c.ok ? `Only COCO ${c.name}: 80 everyday classes (bird, airplane, kite…), no drone class` : c.why],
-    ['imaging', 'Imaging only', true, 'No model: motion between frames and local contrast'],
-  ];
-  if (!opts.some(o => o[0] === aiUse && o[2])) aiUse = 'all';
-  $('#aisrc').innerHTML = opts.map(([v, label, ok, tip]) =>
-    `<option value="${v}"${ok ? '' : ' disabled'}${v === aiUse ? ' selected' : ''} title="${esc(tip)}">${esc(label)}</option>`).join('');
-  const now = opts.find(o => o[0] === aiUse);
-  $('#aisrc').title = `AI assist runs: ${now[3]}` +
-    (m.ok ? '' : `\nYour model: unavailable - ${m.why}`);
+// "drone_camera_model_v16-day.pt" -> "drone_camera…-day.pt": start, "…", end, extension
+function shortName(n, head = 12, tail = 4) {
+  if (!n) return '';
+  const dot = n.lastIndexOf('.');
+  const base = dot > 0 ? n.slice(0, dot) : n, ext = dot > 0 ? n.slice(dot) : '';
+  return base.length <= head + tail + 1 ? n : `${base.slice(0, head)}…${base.slice(-tail)}${ext}`;
 }
-$('#aisrc').onchange = e => {
-  aiUse = e.target.value;
+
+function aiOptions() {
+  const m = aiSources.model, c = aiSources.coco;
+  return [
+    {v: 'all', label: 'All sources', ok: true,
+     sub: 'Your model, COCO, motion and contrast · model finds first'},
+    {v: 'model', label: m.ok ? `Your model · ${shortName(m.name)}` : 'Your model', ok: m.ok,
+     full: m.name, sub: m.ok ? (m.from === 'given' ? 'Given with --model' : 'From model/') : m.why},
+    {v: 'coco', label: 'COCO default', ok: c.ok,
+     sub: c.ok ? `General YOLO11, 80 classes, no drone${c.downloaded ? '' : ' · downloads ~40 MB once'}` : c.why},
+    {v: 'imaging', label: 'Imaging only', ok: true, sub: 'No model: motion between frames, local contrast'},
+  ];
+}
+
+let aiHi = 0;
+function renderAiSources() {
+  const opts = aiOptions();
+  if (!opts.some(o => o.v === aiUse && o.ok)) aiUse = 'all';
+  const now = opts.find(o => o.v === aiUse);
+  // the button: what runs, shortened; the full story on hover
+  $('#aisrc .aisl').textContent = now.v === 'model' ? shortName(aiSources.model.name, 8, 4) : now.label;
+  $('#aisrc').title = `AI assist runs: ${now.label}${now.full ? ` (${now.full})` : ''} - ${now.sub}`;
+  $('#aisrc-pop').innerHTML = '<div class="cpsec">AI assist runs</div>' + opts.map((o, i) =>
+    `<div class="airow${o.v === aiUse ? ' cur' : ''}${i === aiHi ? ' hi' : ''}${o.ok ? '' : ' off'}" role="option"
+          data-v="${o.v}" aria-selected="${o.v === aiUse}" aria-disabled="${!o.ok}"
+          title="${esc(o.full ? `${o.full} - ${o.sub}` : o.sub)}">
+       <span class="ait">${esc(o.label)}</span><span class="ais">${esc(o.sub)}</span></div>`).join('');
+  $('#aisrc-pop').querySelectorAll('.airow').forEach(r => r.onclick = () => pickAiSource(r.dataset.v));
+}
+function pickAiSource(v) {
+  const o = aiOptions().find(x => x.v === v);
+  if (!o || !o.ok) return;                       // a greyed-out option says why, and stays shut
+  aiUse = v;
   try { localStorage.setItem('dl-aisrc', aiUse); } catch {}
-  renderAiSources(); e.target.blur();
-};
+  closeAiPick(); renderAiSources();
+}
+function openAiPick() {
+  closeClassPick(); closeBoxMenu();
+  aiHi = Math.max(0, aiOptions().findIndex(o => o.v === aiUse));
+  renderAiSources();
+  $('#aisrc-pop').hidden = false;
+  $('#aisrc').setAttribute('aria-expanded', 'true');
+  $('#aisrc-pop').focus();
+}
+function closeAiPick() {
+  const pop = $('#aisrc-pop');
+  if (pop.hidden) return;
+  const hadFocus = pop.contains(document.activeElement);
+  pop.hidden = true;
+  $('#aisrc').setAttribute('aria-expanded', 'false');
+  if (hadFocus) $('#aisrc').focus({preventScroll: true});
+}
+$('#aisrc').onclick = () => $('#aisrc-pop').hidden ? openAiPick() : closeAiPick();
+$('#aisrc-pop').addEventListener('keydown', e => {
+  e.stopPropagation();                           // keys belong to the list while it is open
+  const opts = aiOptions();
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const d = e.key === 'ArrowDown' ? 1 : -1;
+    for (let k = 1; k <= opts.length; k++) {     // skip the options that cannot run
+      const j = (aiHi + d * k + opts.length * 4) % opts.length;
+      if (opts[j].ok) { aiHi = j; break; }
+    }
+    renderAiSources();
+  } else if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault(); pickAiSource(opts[aiHi].v);
+  } else if (e.key === 'Escape') {
+    e.preventDefault(); closeAiPick();
+  }
+});
+document.addEventListener('mousedown', e => { if (!e.target.closest('.aipick')) closeAiPick(); }, true);
 
 async function runAI() {
   if (!cur) return;
@@ -2050,7 +2106,7 @@ function prefetchNextPage() {
   aiSources = s.sources || aiSources;
   renderAiSources();
   const sm = aiSources.model;
-  $('#modelbadge').textContent = sm.ok ? `model: ${sm.name}` : 'no model in model/';
+  $('#modelbadge').textContent = sm.ok ? `model: ${shortName(sm.name)}` : 'no model in model/';
   $('#modelbadge').title = sm.ok
     ? `AI assist can use ${sm.name} (${sm.from === 'given' ? 'given with --model / LABELLER_MODEL' : 'from model/'})`
     : `Your model: ${sm.why}. COCO and imaging still work - pick them beside AI assist.`;

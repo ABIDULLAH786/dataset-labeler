@@ -554,8 +554,24 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px s
 /* the class list scrolls on its own; reaching its end never scrolls anything behind it */
 #boxmenu .mlist.scroll{overscroll-behavior:contain}
 
-/* AI assist and what it runs, as one control */
+/* AI assist and what it runs, as one control: the button, then a picker in the app's own style */
 .aigroup{display:inline-flex;align-items:stretch}
 .aigroup #ai{border-top-right-radius:0;border-bottom-right-radius:0}
-.aigroup #aisrc{border-top-left-radius:0;border-bottom-left-radius:0;border-left:none;max-width:170px;
-  font-size:12.5px;padding:0 6px;height:auto;cursor:pointer}
+.aipick{position:relative;display:inline-flex}
+#aisrc{border-top-left-radius:0;border-bottom-left-radius:0;border-left:none;gap:6px;padding-right:8px;
+  max-width:190px;font-size:12.5px;color:var(--muted)}
+#aisrc .aisl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#aisrc .caret{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;
+  stroke-linejoin:round;flex:none;opacity:.7}
+#aisrc[aria-expanded="true"]{background:var(--panel2);color:var(--fg)}
+.aipop{left:0;right:auto;width:300px;outline:none}
+.airow{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border-radius:5px;cursor:pointer}
+.airow .ait{font-size:13px;font-weight:600;color:var(--fg);display:flex;align-items:center;gap:6px}
+.airow .ais{font-size:11.5px;color:var(--dim);line-height:1.35}
+.airow:hover,.airow.hi{background:var(--panel2)}
+.airow.hi{box-shadow:inset 0 0 0 1px var(--line2)}
+.airow.cur .ait::after{content:"✓";margin-left:auto;color:var(--muted);font-weight:400}
+/* an option that cannot run: shown, greyed, saying why - not hidden, so its absence is explained */
+.airow.off{cursor:not-allowed;background:none;box-shadow:none}
+.airow.off .ait{color:var(--dim);font-weight:500}
+.airow.off .ais{color:#b0563f}
