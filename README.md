@@ -47,7 +47,8 @@ labelling in the first place.
 | **A desktop session** | it opens a browser window; it is a local tool, not a hosted one |
 | `zenity` or `kdialog` | optional, for the native **Browse…** dialog. Falls back to `tkinter`, and you can always paste a path instead |
 
-Linux, macOS and WSL all work. Everything else is installed by pip in step 2.
+Linux, macOS, WSL and Windows all work. Everything else is installed by pip in step 2. The steps
+below are written for Linux and macOS; **Windows** has its own commands, in [Run → Windows](#windows).
 
 ### Step 0: check your Python
 
@@ -87,6 +88,8 @@ cd dataset-labeler
 ```
 
 ### Step 2: create a virtual environment and install into it
+
+On Windows, use the PowerShell version of this step in [Run → Windows](#windows) instead.
 
 ```bash
 python3 -m venv .venv
@@ -135,6 +138,11 @@ labeller --help
 
 ## Run
 
+Run instructions for each system. Both need steps 1–2 above done once (Windows does its own
+version of step 2 below).
+
+### Linux and macOS
+
 ```bash
 cd /some/folder/of/images
 labeller
@@ -157,6 +165,57 @@ Other ways to start it:
 | `labeller --port 9000` | pin a port |
 
 Stop it with `Ctrl+C` in the terminal it is running in.
+
+Without the launcher on your PATH (step 4), start it from the clone instead:
+
+```bash
+cd dataset-labeler
+.venv/bin/python server.py --root /path/to/images --port 8077
+```
+
+Then open <http://127.0.0.1:8077> in your browser.
+
+### Windows
+
+The `labeller` launcher is a bash script, so on Windows you run the server with Python directly.
+Use **PowerShell**. Python 3.10+ comes from <https://www.python.org/downloads/> (tick **Add
+python.exe to PATH** in the installer) and Git from <https://git-scm.com/download/win>.
+
+One-time setup, in the folder you cloned in step 1:
+
+```powershell
+cd dataset-labeler
+py -m venv .venv
+.venv\Scripts\python -m pip install --upgrade pip
+.venv\Scripts\pip install -r requirements.txt
+
+# optional: the model step of AI assist (see step 3)
+.venv\Scripts\pip install -r requirements-ai.txt
+```
+
+Run it, every time:
+
+```powershell
+cd dataset-labeler
+.venv\Scripts\python server.py --root "D:\datasets\clip-03" --port 8077
+```
+
+Then open <http://127.0.0.1:8077> in your browser; the window shows the folder (`root`) and the
+address (`open`) it is serving. Keep the quotes around a path with spaces in it. Leave out `--root` to pick a folder
+in the browser instead, with **Browse…**. Stop it with `Ctrl+C` in the PowerShell window.
+
+| | |
+|---|---|
+| `--root "D:\path\to\images"` | the folder to label |
+| `--no-model` | AI assist without a model (motion and contrast only) |
+| `--port 9000` | another port, e.g. to open a second folder side by side |
+
+Nothing needs activating: `.venv\Scripts\python` always uses the project's own packages. If
+`py` is not found, use `python` instead. On Windows the class list and caches are kept under
+`C:\Users\<you>\.config` and `C:\Users\<you>\.cache`.
+
+**WSL** behaves like Linux: follow the Linux steps inside your WSL terminal, and give it Windows
+folders as `/mnt/d/datasets/...`.
 
 ### First run: create a class
 
