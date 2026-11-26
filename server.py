@@ -83,8 +83,14 @@ async def revalidate_ui(request: Request, call_next):
 BASE: Path = Path.home()          # the sandbox the browser may not climb out of
 ROOT: Path | None = None          # the folder currently being worked in
 MODEL_PATH: str | None = None
+MODEL_INFO: dict = {"name": None, "source": "none"}   # your own model, if any (for the header)
+NO_MODELS = False                                     # --no-model: imaging only
+MODEL_DIR = HERE / "model"
+# The COCO fallback. Not shipped with the code: Ultralytics downloads these weights once on first
+# use. They are kept OUTSIDE model/, so a downloaded COCO file is never mistaken for your model.
+COCO_WEIGHTS = os.environ.get("LABELLER_COCO", "yolo11m.pt")
+COCO_CACHE = Path.home() / ".cache" / "drone-labeler" / "weights"
 LOCK_BASE = False            # refuse to follow a chosen folder out of --base
-_model = None
 _clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
 
 IMG_EXT = (".jpg", ".jpeg", ".png")
@@ -524,7 +530,8 @@ def index():
 @app.get("/api/state")
 def state():
     return {"base": str(BASE), "root": str(ROOT) if ROOT else None,
-            "model": bool(MODEL_PATH), "locked": LOCK_BASE}
+            "model": bool(MODEL_PATH), "model_name": MODEL_INFO["name"],
+            "model_source": MODEL_INFO["source"], "sources": sources(), "locked": LOCK_BASE}
 
 
 def scan(d: Path) -> dict:
@@ -1114,12 +1121,66 @@ def delete_frames(req: DelReq):
 class AiReq(BaseModel):
     folder: str
     name: str
+    use: str = "all"            # "all" | "model" | "coco" | "imaging"
+
+
+_models: dict = {}              # loaded detectors, by key, kept for the life of the server
+
+
+def have_ultralytics() -> bool:
+    try:
+        import ultralytics  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def coco_path() -> Path:
+    return COCO_CACHE / COCO_WEIGHTS
+
+
+def load_detector(key: str):
+    """Your model ("model") or COCO ("coco"), loaded once on first use. COCO's weights are
+    downloaded into the cache the first time - never into model/."""
+    if key in _models:
+        return _models[key]
+    from ultralytics import YOLO
+    import torch
+    if key == "coco":
+        COCO_CACHE.mkdir(parents=True, exist_ok=True)
+        if not coco_path().exists():
+            cwd = os.getcwd()
+            try:
+                os.chdir(COCO_CACHE)
+                YOLO(COCO_WEIGHTS)                  # fetches it from the Ultralytics release
+            finally:
+                os.chdir(cwd)
+        weights = str(coco_path())
+    else:
+        weights = MODEL_PATH
+    _models[key] = (YOLO(weights), 0 if torch.cuda.is_available() else "cpu")
+    return _models[key]
+
+
+def sources() -> dict:
+    """What AI assist can run right now, and why not when it cannot - for the source picker."""
+    ul = have_ultralytics()
+    why_ul = "Ultralytics is not installed - pip install -r requirements-ai.txt"
+    if NO_MODELS:
+        off = "started with --no-model"
+        return {"model": {"ok": False, "why": off}, "coco": {"ok": False, "why": off}}
+    model = ({"ok": False, "why": "no .pt in model/ - add best.pt (or any .pt) there"}
+             if not MODEL_PATH else
+             {"ok": ul, "why": "" if ul else why_ul, "name": MODEL_INFO["name"],
+              "from": MODEL_INFO["source"]})
+    coco = {"ok": ul, "why": "" if ul else why_ul, "name": COCO_WEIGHTS,
+            "downloaded": coco_path().exists()}
+    return {"model": model, "coco": coco}
 
 
 @app.post("/api/ai")
 def ai(req: AiReq):
     """Candidates from three independent sources. Suggestions only - nothing is written."""
-    global _model
     d = folder_dir(req.folder)
     ps = images_of(d)
     names = [p.name for p in ps]
@@ -1132,23 +1193,31 @@ def ai(req: AiReq):
     H, W = g.shape
     out, notes = [], []
 
-    if MODEL_PATH:
+    src = sources()
+    found = []                                      # model results: always listed first
+    want = {"all": ("model", "coco"), "model": ("model",), "coco": ("coco",)}.get(req.use, ())
+    for key in want:
+        if not src[key]["ok"]:
+            if req.use == key:                      # asked for this one specifically
+                notes.append(f"{key} unavailable: {src[key]['why']}")
+            continue
         try:
-            if _model is None:
-                from ultralytics import YOLO
-                import torch
-                _model = (YOLO(MODEL_PATH), 0 if torch.cuda.is_available() else "cpu")
-            m, dev = _model
-            r = m.predict(str(ps[i]), imgsz=1280, conf=0.0005, iou=0.5,
-                          verbose=False, device=dev)[0]
+            first = key == "coco" and not src["coco"]["downloaded"]
+            m, dev = load_detector(key)
+            if first:
+                notes.append(f"COCO weights downloaded once ({COCO_WEIGHTS}), kept in {COCO_CACHE}")
+            r = m.predict(str(ps[i]), imgsz=1280, conf=0.05, iou=0.5, verbose=False, device=dev)[0]
             if r.boxes is not None and len(r.boxes):
-                for xy, c in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist()):
-                    out.append({"box": [round(float(v), 1) for v in xy], "src": "model",
-                                "score": round(float(c), 4)})
+                for xy, c, k in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist(),
+                                    r.boxes.cls.tolist()):
+                    found.append({"box": [round(float(v), 1) for v in xy], "src": key,
+                                  "label": str(m.names.get(int(k), int(k))),
+                                  "score": round(float(c), 4)})
         except Exception as e:
-            notes.append(f"model unavailable: {type(e).__name__}")
-    else:
-        notes.append("no model configured (--model)")
+            notes.append(f"{key} unavailable: {type(e).__name__}: {e}"[:160])
+    if req.use in ("model", "coco"):
+        found.sort(key=lambda o: -o["score"])
+        return {"w": int(W), "h": int(H), "candidates": found[:60], "notes": notes}
 
     if 0 < i < len(ps) - 1:
         a = cv2.imread(str(ps[i - 1]), cv2.IMREAD_GRAYSCALE)
@@ -1177,8 +1246,15 @@ def ai(req: AiReq):
                 out.append({"box": [x, y, x + w, y + h], "src": tag,
                             "score": round(float(z[y:y + h, x:x + w].max()) / 20, 3)})
 
+    # Model results first - your own model, then COCO - then motion and
+    # contrast finds. Scores are not comparable across the two (a probability vs a contrast
+    # measure), so one list sorted by score buried a model's 0.34 under 0.5 motion blobs.
+    # your model first, then COCO, each by score
+    found.sort(key=lambda o: (o["src"] != "model", -o["score"]))
     out.sort(key=lambda o: -o["score"])
-    return {"w": int(W), "h": int(H), "candidates": out[:60], "notes": notes}
+    found = found[:40]
+    return {"w": int(W), "h": int(H), "candidates": found + out[:max(0, 60 - len(found))],
+            "notes": notes}
 
 
 class SnapReq(BaseModel):
@@ -1230,6 +1306,42 @@ def snap(req: SnapReq):
     return {"box": [x, y, x + w, y + h]}
 
 
+def pick_model(explicit, off):
+    """
+    Which weights AI assist uses, first match wins:
+
+      1. --model / LABELLER_MODEL, if given
+      2. model/best.pt
+      3. the first *.pt in model/, by name
+    COCO (an Ultralytics YOLO11 trained on the 80 COCO classes) is a separate source in AI
+    assist, downloaded on first use, so it is there with or without a model of your own.
+
+    The model itself is only loaded on the first press of AI assist, so startup stays fast.
+    """
+    global NO_MODELS
+    if off:
+        NO_MODELS = True
+        MODEL_INFO.update(name=None, source="none")
+        return None
+    if explicit:
+        p = Path(explicit).expanduser()
+        if not p.is_file():
+            sys.exit(f"--model: no such file: {p}")
+        MODEL_INFO.update(name=p.name, source="given")
+        return str(p.resolve())
+    if MODEL_DIR.is_dir():
+        pts = sorted(q for q in MODEL_DIR.glob("*.pt") if q.is_file())
+        best = MODEL_DIR / "best.pt"
+        if best.is_file():
+            MODEL_INFO.update(name="best.pt", source="model/")
+            return str(best)
+        if pts:
+            MODEL_INFO.update(name=pts[0].name, source="model/")
+            return str(pts[0])
+    MODEL_INFO.update(name=None, source="none")     # no model of your own: COCO still is one
+    return None
+
+
 def main():
     global BASE, ROOT, MODEL_PATH, LOCK_BASE
     ap = argparse.ArgumentParser(description="Local web labeller for folders of frames.")
@@ -1240,7 +1352,10 @@ def main():
     ap.add_argument("--lock-base", action="store_true",
                     help="refuse to open any folder outside --base")
     ap.add_argument("--model", default=None,
-                    help="optional YOLO weights, enables assisted candidates")
+                    help="YOLO weights for AI assist (default: model/best.pt, else the first "
+                         ".pt in model/, else COCO)")
+    ap.add_argument("--no-model", action="store_true",
+                    help="AI assist without any model: motion and contrast only")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
@@ -1254,14 +1369,15 @@ def main():
         ROOT = args.root.resolve()
         if not inside(ROOT, BASE):
             sys.exit(f"--root must sit inside --base ({BASE})")
-    MODEL_PATH = args.model
+    MODEL_PATH = pick_model(args.model, args.no_model)
     LOCK_BASE = args.lock_base
 
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     import uvicorn
     print(f"base   {BASE}")
     print(f"root   {ROOT or 'none yet - pick a folder in the browser'}")
-    print(f"model  {MODEL_PATH or 'none - assisted candidates limited to imaging'}")
+    print(f"model  {MODEL_INFO['name'] or 'none in model/'}  ({MODEL_INFO['source']})"
+          f"   coco {'off' if NO_MODELS else COCO_WEIGHTS}")
     print(f"open   http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 

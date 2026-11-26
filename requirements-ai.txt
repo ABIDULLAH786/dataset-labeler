@@ -1,0 +1,4 @@
+# Optional: enables the model step of "AI assist" (your own YOLO weights in model/, or COCO).
+# Everything else in the labeller works without it.
+-r requirements.txt
+ultralytics>=8.3

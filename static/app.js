@@ -1724,6 +1724,7 @@ function renderCands() {
   $('#cands').innerHTML = cands.length ? cands.map((c, i) =>
     `<div class="cd${i === candHi ? ' hi' : ''}" data-i="${i}">
        <span class="tag ${c.src}">${c.src}</span>
+       ${c.label ? `<b class="cl">${esc(c.label)}</b>` : ''}
        <span>${Math.round(c.box[2] - c.box[0])}×${Math.round(c.box[3] - c.box[1])}</span>
        <span class="at">${c.score}</span>
      </div>`).join('')
@@ -1732,12 +1733,16 @@ function renderCands() {
     const i = +el.dataset.i;
     el.onmouseenter = () => { candHi = i; render(); };
     el.onclick = () => {
-      const b = cands[i].box;
+      const c = cands[i], b = c.box;
+      // a model's class goes to the class of the same name, if this dataset has one;
+      // otherwise (and for motion/contrast finds) to the class you are drawing in
+      const same = c.label && classes.find(k => k.name.toLowerCase() === c.label.toLowerCase());
+      const cls = same ? same.id : activeClass;
       remember();
-      boxes.push([b[0], b[1], b[2], b[3], activeClass]);
+      boxes.push([b[0], b[1], b[2], b[3], cls]);
       sel = boxes.length - 1; dirty = true;
       renderBoxes(); render();
-      toast(`Accepted as ${nameOf(activeClass)}`, 'ok');
+      toast(`Accepted as ${nameOf(cls)}`, 'ok');
     };
   });
 }
@@ -1760,11 +1765,42 @@ async function save(quiet) {
   } catch (e) { toast('Save failed: ' + e.message, 'err'); }
 }
 
+/* ---- what AI assist runs: everything, your model, COCO, or imaging alone. An option that cannot
+ * run says why, in its own label, and cannot be picked. The choice is remembered. */
+let aiSources = {model: {ok: false, why: ''}, coco: {ok: false, why: ''}};
+let aiUse = (() => { try { return localStorage.getItem('dl-aisrc') || 'all'; } catch { return 'all'; } })();
+
+function renderAiSources() {
+  const m = aiSources.model, c = aiSources.coco;
+  const opts = [
+    ['all', 'All sources', true, 'Your model, COCO, motion and contrast - model results listed first'],
+    ['model', m.ok ? `Your model · ${m.name}` : `Your model — ${m.why}`, m.ok,
+     m.ok ? `Only ${m.name} (${m.from === 'given' ? 'given with --model' : 'from model/'})` : m.why],
+    ['coco', c.ok ? `COCO default${c.downloaded ? '' : ' · downloads ~40 MB once'}` : `COCO — ${c.why}`, c.ok,
+     c.ok ? `Only COCO ${c.name}: 80 everyday classes (bird, airplane, kite…), no drone class` : c.why],
+    ['imaging', 'Imaging only', true, 'No model: motion between frames and local contrast'],
+  ];
+  if (!opts.some(o => o[0] === aiUse && o[2])) aiUse = 'all';
+  $('#aisrc').innerHTML = opts.map(([v, label, ok, tip]) =>
+    `<option value="${v}"${ok ? '' : ' disabled'}${v === aiUse ? ' selected' : ''} title="${esc(tip)}">${esc(label)}</option>`).join('');
+  const now = opts.find(o => o[0] === aiUse);
+  $('#aisrc').title = `AI assist runs: ${now[3]}` +
+    (m.ok ? '' : `\nYour model: unavailable - ${m.why}`);
+}
+$('#aisrc').onchange = e => {
+  aiUse = e.target.value;
+  try { localStorage.setItem('dl-aisrc', aiUse); } catch {}
+  renderAiSources(); e.target.blur();
+};
+
 async function runAI() {
   if (!cur) return;
-  toast('Running the detectors…');
+  const cocoFirst = (aiUse === 'all' || aiUse === 'coco') && aiSources.coco.ok && !aiSources.coco.downloaded;
+  toast(cocoFirst ? 'Running the detectors… first COCO use downloads its weights (~40 MB, once)'
+                  : 'Running the detectors…');
   try {
-    const r = await post('/api/ai', {folder, name: cur});
+    const r = await post('/api/ai', {folder, name: cur, use: aiUse});
+    if (cocoFirst) api('/api/state').then(s => { aiSources = s.sources || aiSources; renderAiSources(); }).catch(() => {});
     cands = r.candidates; candHi = -1;
     renderCands(); render();
     (r.notes || []).forEach(n => toast(n, 'err'));
@@ -2010,8 +2046,16 @@ function prefetchNextPage() {
   setLoupe(loupeOn);
   const s = await api('/api/state');
   base = s.base; root = s.root;
-  $('#modelbadge').textContent = s.model ? 'model loaded' : 'imaging only';
-  $('#modelbadge').classList.toggle('ok', s.model);
+  // your own model for AI assist, or why there is none
+  aiSources = s.sources || aiSources;
+  renderAiSources();
+  const sm = aiSources.model;
+  $('#modelbadge').textContent = sm.ok ? `model: ${sm.name}` : 'no model in model/';
+  $('#modelbadge').title = sm.ok
+    ? `AI assist can use ${sm.name} (${sm.from === 'given' ? 'given with --model / LABELLER_MODEL' : 'from model/'})`
+    : `Your model: ${sm.why}. COCO and imaging still work - pick them beside AI assist.`;
+  $('#modelbadge').classList.toggle('ok', !!sm.ok);
+  $('#modelbadge').classList.toggle('coco', false);
   if (root) {
     $('#rootpath').textContent = root;
     folders = await api('/api/folders');

@@ -3,7 +3,7 @@
 #
 #   labeller                     label the current directory
 #   labeller path/to/frames      label that directory
-#   labeller . --no-model        skip the detection model (starts faster)
+#   labeller . --no-model        AI assist without a model (motion and contrast only)
 #   labeller --port 9000         use a specific port
 #
 # Anything else is passed straight through to server.py. The folder given here is only the
@@ -14,9 +14,9 @@ set -uo pipefail
 # path means the tool breaks the moment the checkout is moved or someone else clones it.
 REPO="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 
-# Optional detection model for the assisted candidates. Point LABELLER_MODEL at a .pt file, or
-# drop one at model.pt beside this script. Everything except "AI assist" works without it.
-MODEL="${LABELLER_MODEL:-$REPO/model.pt}"
+# Detection model for "AI assist". The server picks it: model/best.pt, else the first .pt in
+# model/, else COCO (downloaded once). LABELLER_MODEL=/path/to/weights.pt overrides that.
+MODEL="${LABELLER_MODEL:-}"
 
 # The dependencies are not in the system python - opencv and FastAPI live in a virtualenv. An
 # interactive shell and this script may well resolve `python3` to different interpreters, so
@@ -115,7 +115,8 @@ if ! port="$(free_port "$want_port")"; then
 fi
 
 args=(--root "$target" --port "$port")
-if [[ $use_model -eq 1 && -f "$MODEL" ]]; then args+=(--model "$MODEL"); fi
+if [[ $use_model -eq 0 ]]; then args+=(--no-model)
+elif [[ -n "$MODEL" ]]; then args+=(--model "$MODEL"); fi
 args+=("${pass[@]+"${pass[@]}"}")
 
 url="http://127.0.0.1:$port"

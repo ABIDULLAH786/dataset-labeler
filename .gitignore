@@ -8,3 +8,6 @@ venv/
 .labeller/
 model.pt
 classes.txt
+
+# model weights stay out of git - they are large binaries; model/README.md explains the folder
+model/*.pt

@@ -100,18 +100,19 @@ be activated later.
 
 ### Step 3 (optional): the detection model
 
-Only needed for the **AI assist** button. Everything else works without it.
+Only needed for the model step of **AI assist**. Everything else works without it.
 
 ```bash
-.venv/bin/pip install ultralytics
+.venv/bin/pip install -r requirements-ai.txt
 ```
 
-Then point the tool at your weights, either way round:
+Then put your YOLO weights in [model/](model/), ideally as `model/best.pt` (otherwise the
+first `.pt` there is used; `--model` or `LABELLER_MODEL` override both).
 
-```bash
-export LABELLER_MODEL=/path/to/weights.pt    # or
-cp /path/to/weights.pt model.pt              # beside the script
-```
+The picker beside **AI assist** chooses what it runs: **All sources**, **Your model**, **COCO
+default** or **Imaging only** (motion and contrast). Your model's finds are always listed first.
+COCO is a general YOLO11 model; it is not in the repository, and is downloaded once (~40 MB) the
+first time it is used. See [model/README.md](model/README.md).
 
 ### Step 4: put the launcher on your PATH
 
@@ -174,7 +175,7 @@ The launcher is a convenience. The server takes the same work:
 .venv/bin/python server.py --root /path/to/folder          # open with that folder selected
 .venv/bin/python server.py --base /mnt/data --port 8001    # start the browser under /mnt/data
 .venv/bin/python server.py --root ... --lock-base          # refuse anything outside --base
-.venv/bin/python server.py --root ... --model weights.pt   # enable assisted candidates
+.venv/bin/python server.py --root ... --model weights.pt   # use these weights for AI assist
 ```
 
 ### If something goes wrong

@@ -131,6 +131,9 @@ button,input,select,textarea{font:inherit;color:inherit}
 .tag.ok{background:#eefaf3;color:var(--good)}
 .tag.dimtag{background:var(--panel2);color:var(--dim)}
 .tag.model{background:var(--accent-soft);color:#8a6d00}
+.tag.coco{background:#eef2f8;color:#3c5a8a}
+.cd .cl{font-weight:650;color:var(--fg)}
+.badge.coco{color:#3c5a8a;border-color:#c9d5e8;background:#eef2f8}
 .tag.motion{background:#eefaf3;color:var(--good)}
 .tag.dark{background:#eef2f8;color:#476086}
 .tag.bright{background:#fdf6e3;color:#8a6d00}
@@ -550,3 +553,9 @@ kbd{font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px s
 #menuveil[hidden]{display:none}
 /* the class list scrolls on its own; reaching its end never scrolls anything behind it */
 #boxmenu .mlist.scroll{overscroll-behavior:contain}
+
+/* AI assist and what it runs, as one control */
+.aigroup{display:inline-flex;align-items:stretch}
+.aigroup #ai{border-top-right-radius:0;border-bottom-right-radius:0}
+.aigroup #aisrc{border-top-left-radius:0;border-bottom-left-radius:0;border-left:none;max-width:170px;
+  font-size:12.5px;padding:0 6px;height:auto;cursor:pointer}
